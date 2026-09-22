@@ -75,13 +75,30 @@ const tourFromDb = (r) => ({
   status: nullToEmpty(r.status),
 });
 
+// Supabase/PostgREST liefert pro Anfrage standardmäßig maximal 1000 Zeilen
+// zurück. Bei über 1000 Touren muss daher seitenweise nachgeladen werden,
+// bis eine Seite weniger als PAGE_SIZE Zeilen enthält (= letzte Seite).
+// Die Sortierung braucht zusätzlich "id" als Tiebreaker, weil viele Touren
+// dasselbe Datum haben - sonst wäre die Reihenfolge zwischen Seiten nicht
+// stabil und einzelne Zeilen könnten doppelt auftauchen oder fehlen.
+const PAGE_SIZE = 1000;
+
 export async function fetchTours() {
-  const { data, error } = await supabase
-    .from("tours")
-    .select("*")
-    .order("datum", { ascending: false });
-  if (error) throw error;
-  return data.map(tourFromDb);
+  let allRows = [];
+  let from = 0;
+  for (;;) {
+    const { data, error } = await supabase
+      .from("tours")
+      .select("*")
+      .order("datum", { ascending: false })
+      .order("id", { ascending: false })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) throw error;
+    allRows = allRows.concat(data);
+    if (data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+  return allRows.map(tourFromDb);
 }
 
 // Vergleicht `next` (gewünschter Zielzustand) gegen `prev` (aktueller
