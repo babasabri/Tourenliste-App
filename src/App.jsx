@@ -1182,6 +1182,7 @@ export default function TourenApp() {
 
         {tab === "touren" && (
           <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
+            <div style={{ overflowX: "auto" }}>
             <table>
               <thead>
                 <tr>
@@ -1219,6 +1220,7 @@ export default function TourenApp() {
                 })}
               </tbody>
             </table>
+            </div>
           </div>
         )}
 
@@ -1229,6 +1231,7 @@ export default function TourenApp() {
               (über Suche → Bearbeiten), verschwindet sie automatisch aus dieser Liste.
             </div>
             <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
+              <div style={{ overflowX: "auto" }}>
               <table>
                 <thead>
                   <tr>
@@ -1266,6 +1269,7 @@ export default function TourenApp() {
                   })}
                 </tbody>
               </table>
+              </div>
             </div>
           </div>
         )}
@@ -1497,6 +1501,7 @@ export default function TourenApp() {
             </div>
 
             <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
+              <div style={{ overflowX: "auto" }}>
               <table>
                 <thead>
                   <tr><th>Datum</th><th>LKW</th><th>Kunde</th><th>Container-Nr.</th><th>PLZ</th><th>Ort</th><th style={{ textAlign: "right" }}>Gesamt</th><th>Status</th><th></th></tr>
@@ -1525,7 +1530,7 @@ export default function TourenApp() {
                   })}
                 </tbody>
               </table>
-
+              </div>
             </div>
           </div>
         )}
@@ -1581,6 +1586,7 @@ export default function TourenApp() {
 
             {fleet.length > 0 && (
               <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
+                <div style={{ overflowX: "auto" }}>
                 <table>
                   <thead>
                     <tr>
@@ -1630,6 +1636,7 @@ export default function TourenApp() {
                     })}
                   </tbody>
                 </table>
+                </div>
               </div>
             )}
             <div style={{ fontSize: 12, color: TEXT_MUTED, marginTop: 12, marginBottom: 24 }}>
@@ -1639,6 +1646,7 @@ export default function TourenApp() {
 
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Frühere Wochen</div>
             <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
+              <div style={{ overflowX: "auto" }}>
               <table>
                 <thead>
                   <tr>
@@ -1674,6 +1682,7 @@ export default function TourenApp() {
                   })}
                 </tbody>
               </table>
+              </div>
             </div>
           </div>
         )}
@@ -1737,35 +1746,38 @@ export default function TourenApp() {
                       </div>
                     </div>
                     {b.touren.length > 0 && (
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Datum</th><th>Fahrer</th><th>Kunde</th><th>Auftrags-Nr.</th>
-                            <th>Ankunft</th><th>Abfahrt</th><th style={{ textAlign: "right" }}>Gesamt</th><th>Status</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {b.touren.map((t) => {
-                            const sc = statusColors(t.status);
-                            return (
-                              <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer", background: sc.bg }} title="Doppelklick zum Bearbeiten">
-                                <td className="mono">{formatDateDMY(t.datum)}</td>
-                                <td>{t.fahrer}</td>
-                                <td>{t.kunde}</td>
-                                <td className="mono">{t.auftragsNr}</td>
-                                <td className="mono">{t.ankunft}</td>
-                                <td className="mono">{t.abfahrt}</td>
-                                <td className="mono" style={{ textAlign: "right" }}>{euro(gesamt(t))}</td>
-                                <td>
-                                  <span style={{ color: sc.text, fontSize: 12, fontWeight: 700 }}>
-                                    {t.status}
-                                  </span>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ minWidth: 720 }}>
+                          <thead>
+                            <tr>
+                              <th style={{ whiteSpace: "nowrap" }}>Datum</th><th>Fahrer</th><th>Kunde</th><th>Auftrags-Nr.</th>
+                              <th style={{ whiteSpace: "nowrap" }}>Ankunft</th><th style={{ whiteSpace: "nowrap" }}>Abfahrt</th>
+                              <th style={{ textAlign: "right", whiteSpace: "nowrap" }}>Gesamt</th><th>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {b.touren.map((t) => {
+                              const sc = statusColors(t.status);
+                              return (
+                                <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer", background: sc.bg }} title="Doppelklick zum Bearbeiten">
+                                  <td className="mono" style={{ whiteSpace: "nowrap" }}>{formatDateDMY(t.datum)}</td>
+                                  <td>{t.fahrer}</td>
+                                  <td>{t.kunde}</td>
+                                  <td className="mono">{t.auftragsNr}</td>
+                                  <td className="mono" style={{ whiteSpace: "nowrap" }}>{t.ankunft}</td>
+                                  <td className="mono" style={{ whiteSpace: "nowrap" }}>{t.abfahrt}</td>
+                                  <td className="mono" style={{ textAlign: "right", whiteSpace: "nowrap" }}>{euro(gesamt(t))}</td>
+                                  <td>
+                                    <span style={{ color: sc.text, fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>
+                                      {t.status}
+                                    </span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
                     )}
                   </div>
                 );
