@@ -5,7 +5,7 @@ import {
 } from "recharts";
 import {
   LayoutDashboard, Truck, PlusCircle, Search as SearchIcon, Users,
-  Fuel, X, Save, Trash2, Pencil, AlertTriangle, CalendarClock, Upload,
+  Fuel, X, Save, Trash2, Pencil, AlertTriangle, CalendarClock, Upload, ListChecks,
 } from "lucide-react";
 import * as db from "./db";
 
@@ -53,6 +53,18 @@ function isoWeekYear(dateStr) {
   const dayNr = (d.getDay() + 6) % 7;
   target.setDate(target.getDate() - dayNr + 3);
   return target.getFullYear();
+}
+
+// Montag der angegebenen ISO-Kalenderwoche als Date-Objekt (gleiche Rechnung
+// wie in shiftWeek: der 4. Januar liegt immer in KW1 des Jahres).
+function isoWeekMonday(jahr, kw) {
+  const d = new Date(jahr, 0, 4);
+  const dayNr = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - dayNr + (kw - 1) * 7);
+  return d;
+}
+function formatDateShort(d) {
+  return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.`;
 }
 
 function euro(n) {
@@ -264,6 +276,12 @@ export default function TourenApp() {
   const today = toLocalISODate(new Date());
   const [epJahr, setEpJahr] = useState(isoWeekYear(today));
   const [epKw, setEpKw] = useState(isoWeek(today));
+  // Lokaler Entwurf der aktuell angezeigten Einsatzplan-Woche: Eingaben landen
+  // erst hier (kein Netzwerk-Call pro Tastendruck) und werden erst beim Klick
+  // auf "Speichern" tatsächlich in Supabase geschrieben.
+  const [epDraft, setEpDraft] = useState({});
+  const [epDirty, setEpDirty] = useState(false);
+  const [epSaving, setEpSaving] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -299,6 +317,53 @@ export default function TourenApp() {
       setLoaded(true);
     })();
   }, []);
+
+  // Entwurf für die Einsatzplan-Woche neu aufbauen, sobald Jahr/KW wechselt
+  // oder die Fahrzeugliste sich ändert (neuer LKW in Stammdaten). Bewusst
+  // NICHT von `einsatz` abhängig - sonst würde jeder eigene Save mitten in
+  // der Bearbeitung den Entwurf zurücksetzen.
+  useEffect(() => {
+    const initial = {};
+    fleet.forEach((f) => {
+      const rec = getEinsatz(epJahr, epKw, f.plate);
+      initial[f.plate] = {
+        fahrer: rec ? rec.fahrer : "",
+        status: rec ? rec.status : "Aktiv",
+        endKm: rec && rec.endKm !== undefined ? rec.endKm : "",
+      };
+    });
+    setEpDraft(initial);
+    setEpDirty(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [epJahr, epKw, fleet]);
+
+  function setEpDraftField(plate, field, value) {
+    setEpDraft((d) => ({ ...d, [plate]: { ...d[plate], [field]: value } }));
+    setEpDirty(true);
+  }
+
+  // Schreibt den kompletten Entwurf der angezeigten Woche in einem Rutsch nach
+  // Supabase (alle LKW-Zeilen der Woche, nicht nur die geänderten - das ist
+  // unkritisch, weil syncEinsatzplan ohnehin ein Upsert macht und der Entwurf
+  // für unangetastete Zeilen exakt dem zuletzt gespeicherten Stand entspricht).
+  // Alle anderen Wochen im einsatz-Array bleiben unangetastet.
+  async function saveEinsatzWeek() {
+    setEpSaving(true);
+    setStorageError("");
+    const rows = fleet.map((f) => {
+      const draft = epDraft[f.plate] || {};
+      return { jahr: epJahr, kw: epKw, lkw: f.plate, fahrer: draft.fahrer || "", status: draft.status || "Aktiv", endKm: draft.endKm };
+    });
+    const otherWeeks = einsatz.filter((e) => !(e.jahr === epJahr && e.kw === epKw));
+    try {
+      setEinsatz(await db.syncEinsatzplan([...otherWeeks, ...rows]));
+      setEpDirty(false);
+    } catch (e) {
+      setStorageError("Speichern fehlgeschlagen. Bitte erneut versuchen.");
+    } finally {
+      setEpSaving(false);
+    }
+  }
 
   async function persistTours(next) {
     setStorageError("");
@@ -417,15 +482,6 @@ export default function TourenApp() {
     cancelEditKm();
   }
 
-  async function persistEinsatz(next) {
-    setStorageError("");
-    try {
-      setEinsatz(await db.syncEinsatzplan(next));
-    } catch (e) {
-      setStorageError("Speichern fehlgeschlagen. Bitte Seite neu laden und die letzte Änderung erneut vornehmen.");
-    }
-  }
-
   async function persistDieselIndex(next) {
     setStorageError("");
     try {
@@ -492,23 +548,6 @@ export default function TourenApp() {
     if (priorWithEndKm.length > 0) return Number(priorWithEndKm[0].endKm);
     const v = fleet.find((f) => f.plate === plate);
     return v && v.startKm !== undefined && v.startKm !== "" ? Number(v.startKm) : null;
-  }
-
-  // Setzt mehrere Felder eines Einsatzplan-Eintrags in einem Rutsch. Wichtig für
-  // die KM-Erfassung, die endKm UND endKmDatum gleichzeitig schreibt: zwei
-  // aufeinanderfolgende setEinsatzField-Aufrufe würden beide vom selben (noch
-  // nicht aktualisierten) einsatz-Array ausgehen und sich gegenseitig überschreiben.
-  function setEinsatzFields(jahr, kw, plate, fields) {
-    const existing = getEinsatz(jahr, kw, plate);
-    if (existing) {
-      persistEinsatz(einsatz.map((e) => (e === existing ? { ...e, ...fields } : e)));
-    } else {
-      persistEinsatz([...einsatz, { jahr, kw, lkw: plate, fahrer: "", status: "Aktiv", ...fields }]);
-    }
-  }
-
-  function setEinsatzField(jahr, kw, plate, field, value) {
-    setEinsatzFields(jahr, kw, plate, { [field]: value });
   }
 
   function lastTourFor(kunde) {
@@ -695,6 +734,28 @@ export default function TourenApp() {
       });
   }, [einsatz, fleet]);
 
+  // "Wochen-Kontrolle": Touren der ausgewählten Woche, gruppiert nach LKW - als
+  // reine Kontrollansicht (angelehnt an die LKW-Blöcke der alten Excel-
+  // Wochenblätter KW01-KW52), damit man auf einen Blick sieht, was pro LKW
+  // für die Woche schon erfasst wurde. Nutzt dieselbe Wochenauswahl
+  // (epJahr/epKw) wie der Einsatzplan, damit man beim Wechseln der Tabs in
+  // derselben Woche bleibt.
+  const wochenBloecke = useMemo(() => {
+    const weekTours = tours.filter(
+      (t) => t.datum && isoWeekYear(t.datum) === epJahr && isoWeek(t.datum) === epKw
+    );
+    return fleet.map((f) => {
+      const rec = getEinsatz(epJahr, epKw, f.plate);
+      const status = rec ? rec.status : "Aktiv";
+      const fahrer = (rec && rec.fahrer) || f.driver || "";
+      const touren = weekTours
+        .filter((t) => t.lkw === f.plate)
+        .sort((a, b) => (a.datum || "").localeCompare(b.datum || "") || (a.ankunft || "").localeCompare(b.ankunft || ""));
+      const summe = touren.reduce((s, t) => s + gesamt(t), 0);
+      return { plate: f.plate, fahrer, status, touren, summe };
+    });
+  }, [tours, fleet, einsatz, epJahr, epKw]);
+
   const dashTours = useMemo(() => {
     // LKW/Fahrer-Filter gelten immer zuerst - unabhängig davon, ob die Tour ein
     // Datum hat. Vorher wurde bei fehlendem Datum sofort "true" zurückgegeben und
@@ -798,6 +859,7 @@ export default function TourenApp() {
     { id: "neu", label: "Neue Tour", icon: PlusCircle },
     { id: "suche", label: "Suche", icon: SearchIcon },
     { id: "einsatz", label: "Einsatzplan", icon: CalendarClock },
+    { id: "wochenkontrolle", label: "Wochen-Kontrolle", icon: ListChecks },
     { id: "stamm", label: "Stammdaten", icon: Users },
     { id: "import", label: "Import", icon: Upload },
   ];
@@ -1423,6 +1485,15 @@ export default function TourenApp() {
               <button className="ghost" onClick={() => { setEpJahr(isoWeekYear(today)); setEpKw(isoWeek(today)); }}>
                 Aktuelle Woche
               </button>
+              <button className="primary" disabled={!epDirty || epSaving} onClick={saveEinsatzWeek}
+                style={!epDirty || epSaving ? { opacity: 0.5, cursor: "default" } : undefined}>
+                <Save size={14} /> {epSaving ? "Speichert …" : "Speichern"}
+              </button>
+              {epDirty && !epSaving && (
+                <span style={{ fontSize: 12, color: AMBER_DARK, fontWeight: 500 }}>
+                  Ungespeicherte Änderungen – bitte speichern, bevor du die Woche wechselst.
+                </span>
+              )}
               {weeksWithData.length > 0 && (
                 <div>
                   <label>Frühere Woche öffnen</label>
@@ -1458,26 +1529,25 @@ export default function TourenApp() {
                   </thead>
                   <tbody>
                     {fleet.map((f) => {
-                      const rec = getEinsatz(epJahr, epKw, f.plate);
-                      const status = rec ? rec.status : "Aktiv";
-                      const inactiveRow = status !== "Aktiv";
+                      const draft = epDraft[f.plate] || { fahrer: "", status: "Aktiv", endKm: "" };
+                      const inactiveRow = draft.status !== "Aktiv";
                       const startKm = computeStartKm(epJahr, epKw, f.plate);
-                      const endKm = rec && rec.endKm !== undefined && rec.endKm !== "" ? Number(rec.endKm) : null;
+                      const endKm = draft.endKm !== undefined && draft.endKm !== "" ? Number(draft.endKm) : null;
                       const wochenKm = startKm !== null && endKm !== null ? endKm - startKm : null;
                       return (
                         <tr key={f.plate} style={inactiveRow ? { background: "#F2F3F5" } : undefined}>
                           <td className="mono" style={{ fontWeight: 500 }}>{f.plate}</td>
                           <td>
                             <select
-                              value={rec ? rec.fahrer : ""}
-                              onChange={(e) => setEinsatzField(epJahr, epKw, f.plate, "fahrer", e.target.value)}
+                              value={draft.fahrer}
+                              onChange={(e) => setEpDraftField(f.plate, "fahrer", e.target.value)}
                             >
                               <option value="">{f.driver ? `Standard: ${f.driver}` : "– auswählen –"}</option>
                               {driverOptions.map((name) => <option key={name} value={name}>{name}</option>)}
                             </select>
                           </td>
                           <td>
-                            <select value={status} onChange={(e) => setEinsatzField(epJahr, epKw, f.plate, "status", e.target.value)}>
+                            <select value={draft.status} onChange={(e) => setEpDraftField(f.plate, "status", e.target.value)}>
                               <option>Aktiv</option><option>Urlaub</option><option>Krank</option><option>Inaktiv</option>
                             </select>
                           </td>
@@ -1487,8 +1557,8 @@ export default function TourenApp() {
                           <td>
                             <input
                               type="number"
-                              value={rec && rec.endKm !== undefined ? rec.endKm : ""}
-                              onChange={(e) => setEinsatzField(epJahr, epKw, f.plate, "endKm", e.target.value)}
+                              value={draft.endKm}
+                              onChange={(e) => setEpDraftField(f.plate, "endKm", e.target.value)}
                             />
                           </td>
                           <td className="mono" style={{ fontSize: 12.5, padding: "8px 10px" }}>
@@ -1502,7 +1572,8 @@ export default function TourenApp() {
               </div>
             )}
             <div style={{ fontSize: 12, color: TEXT_MUTED, marginTop: 12, marginBottom: 24 }}>
-              Bleibt ein Feld leer, greift in "Neue Tour" der Standard-Fahrer aus den Stammdaten.
+              Änderungen an Fahrer, Status oder Ende-KM werden erst mit Klick auf "Speichern" übernommen.
+              Bleibt das Fahrer-Feld leer, greift in "Neue Tour" der Standard-Fahrer aus den Stammdaten.
             </div>
 
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Frühere Wochen</div>
@@ -1542,6 +1613,102 @@ export default function TourenApp() {
                   })}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {tab === "wochenkontrolle" && (
+          <div>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+              <div>
+                <label>Jahr</label>
+                <input type="number" style={{ width: 100 }} value={epJahr} onChange={(e) => setEpJahr(Number(e.target.value))} />
+              </div>
+              <div>
+                <label>Kalenderwoche</label>
+                <input type="number" min="1" max="53" style={{ width: 100 }} value={epKw} onChange={(e) => setEpKw(Number(e.target.value))} />
+              </div>
+              <button className="ghost" title="Vorherige Woche" onClick={() => shiftWeek(-1)}>◀</button>
+              <button className="ghost" title="Nächste Woche" onClick={() => shiftWeek(1)}>▶</button>
+              <button className="ghost" onClick={() => { setEpJahr(isoWeekYear(today)); setEpKw(isoWeek(today)); }}>
+                Aktuelle Woche
+              </button>
+            </div>
+
+            <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 16 }}>
+              KW {epKw}/{epJahr} ({formatDateShort(isoWeekMonday(epJahr, epKw))} – {formatDateShort(new Date(isoWeekMonday(epJahr, epKw).getTime() + 6 * 86400000))})
+              &nbsp;· reine Kontrollansicht – hier wird nichts gespeichert, Doppelklick auf eine Zeile öffnet die Tour zum Bearbeiten.
+            </div>
+
+            {fleet.length === 0 && (
+              <div style={{ fontSize: 13, color: TEXT_MUTED }}>Erst unter "Stammdaten" Fahrzeuge anlegen.</div>
+            )}
+
+            <div style={{ display: "grid", gap: 16 }}>
+              {wochenBloecke.map((b) => {
+                const inactive = b.status !== "Aktiv";
+                const keineTouren = !inactive && b.touren.length === 0;
+                return (
+                  <div key={b.plate} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden", opacity: inactive ? 0.65 : 1 }}>
+                    <div style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8,
+                      padding: "12px 16px", background: "#F7F8FA", borderBottom: `1px solid ${BORDER}`,
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                        <span className="mono" style={{ fontSize: 14, fontWeight: 600 }}>{b.plate}</span>
+                        <span style={{ fontSize: 12.5, color: TEXT_MUTED }}>{b.fahrer || "– kein Fahrer zugeordnet –"}</span>
+                        {inactive && (
+                          <span style={{ background: "#EDEFF2", color: TEXT_MUTED, fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20 }}>
+                            {b.status}
+                          </span>
+                        )}
+                        {keineTouren && (
+                          <span style={{ background: WARN_BG, color: AMBER_DARK, fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20 }}>
+                            Keine Touren erfasst
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                        <span style={{ fontSize: 12.5, color: TEXT_MUTED }}>
+                          {b.touren.length} {b.touren.length === 1 ? "Tour" : "Touren"}
+                        </span>
+                        <span className="mono" style={{ fontSize: 13, fontWeight: 600 }}>{euro(b.summe)}</span>
+                      </div>
+                    </div>
+                    {b.touren.length > 0 && (
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Datum</th><th>Fahrer</th><th>Kunde</th><th>Auftrags-Nr.</th>
+                            <th>Ankunft</th><th>Abfahrt</th><th style={{ textAlign: "right" }}>Gesamt</th><th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {b.touren.map((t) => {
+                            const sc = statusColors(t.status);
+                            return (
+                              <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer" }} title="Doppelklick zum Bearbeiten">
+                                <td className="mono">{t.datum}</td>
+                                <td>{t.fahrer}</td>
+                                <td>{t.kunde}</td>
+                                <td className="mono">{t.auftragsNr}</td>
+                                <td className="mono">{t.ankunft}</td>
+                                <td className="mono">{t.abfahrt}</td>
+                                <td className="mono" style={{ textAlign: "right" }}>{euro(gesamt(t))}</td>
+                                <td>
+                                  <span style={{ background: sc.bg, color: sc.text, fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20 }}>
+                                    {t.status}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
