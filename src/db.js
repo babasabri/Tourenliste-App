@@ -287,3 +287,4 @@ export async function syncDieselIndex(prev, next) {
   }
   return fetchDieselIndex();
 }
+// deploy-trigger: force Vercel rebuild (13:07 UTC)
