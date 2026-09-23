@@ -843,25 +843,57 @@ export default function TourenApp() {
       .sort((a, b) => b.umsatz - a.umsatz);
   }, [dashTours]);
 
-  // Gefahrene KM je LKW insgesamt (seit dem in den Stammdaten hinterlegten
-  // Start-KM), unabhängig von den Dashboard-Datumsfiltern - basiert auf dem
-  // zuletzt erfassten Ende-KM im Einsatzplan, nicht auf den gefilterten
-  // Touren. Ergebnis als Lookup je Kennzeichen für die LKW-Ranking-Tabelle.
-  const kmPerLkw = useMemo(() => {
+  // Prüft, ob eine Einsatzplan-Woche (Jahr/KW) in den aktuell gewählten
+  // Dashboard-Zeitraum fällt - analog zur Datumsfilterung von dashTours, nur
+  // eben auf Wochenbasis (eine Woche hat kein einzelnes Datum, daher wird der
+  // Monatsfilter auf Montag ODER Sonntag der Woche geprüft, falls die Woche
+  // über einen Monatswechsel läuft; von/bis werden per Bereichsüberlappung
+  // geprüft, damit auch eine Woche zählt, die den Filterzeitraum nur teilweise
+  // überdeckt).
+  function weekInDashRange(jahr, kw) {
+    if (dashFilters.jahr !== "ALLE" && String(jahr) !== dashFilters.jahr) return false;
+    if (dashFilters.kw !== "ALLE" && kw !== Number(dashFilters.kw)) return false;
+    const monday = isoWeekMonday(jahr, kw);
+    const sunday = new Date(monday.getTime() + 6 * 86400000);
+    if (dashFilters.monat !== "ALLE") {
+      const mMonday = monday.getMonth() + 1;
+      const mSunday = sunday.getMonth() + 1;
+      if (Number(dashFilters.monat) !== mMonday && Number(dashFilters.monat) !== mSunday) return false;
+    }
+    if (dashFilters.von && toLocalISODate(sunday) < dashFilters.von) return false;
+    if (dashFilters.bis && toLocalISODate(monday) > dashFilters.bis) return false;
+    return true;
+  }
+
+  // Gefahrene KM je LKW im gewählten Dashboard-Zeitraum (Woche/Monat/Jahr/
+  // eigener Zeitraum - je nachdem, was oben gefiltert ist), statt wie zuvor
+  // immer die Gesamt-KM seit dem Start-KM. Summiert die Wochen-Deltas
+  // (Ende-KM minus Start-KM je Woche, aus computeStartKm) aller Wochen, die
+  // in den Filter fallen - respektiert dabei auch LKW-/Fahrer-Filter.
+  const periodKmPerLkw = useMemo(() => {
     const map = {};
-    fleet.forEach((f) => {
-      const weeksWithEnd = einsatz.filter(
-        (e) => e.lkw === f.plate && e.endKm !== undefined && e.endKm !== "" && e.endKm !== null
-      );
-      if (weeksWithEnd.length === 0 || f.startKm === undefined || f.startKm === "") {
-        map[f.plate] = null;
-        return;
-      }
-      const latest = weeksWithEnd.reduce((a, b) => (weekKey(b.jahr, b.kw) > weekKey(a.jahr, a.kw) ? b : a));
-      map[f.plate] = Number(latest.endKm) - Number(f.startKm);
+    einsatz.forEach((e) => {
+      if (dashFilters.lkw !== "ALLE" && e.lkw !== dashFilters.lkw) return;
+      if (dashFilters.fahrer !== "ALLE" && e.fahrer !== dashFilters.fahrer) return;
+      if (!weekInDashRange(e.jahr, e.kw)) return;
+      const startKm = computeStartKm(e.jahr, e.kw, e.lkw);
+      const endKm = e.endKm !== undefined && e.endKm !== "" && e.endKm !== null ? Number(e.endKm) : null;
+      if (startKm === null || endKm === null) return;
+      map[e.lkw] = (map[e.lkw] || 0) + (endKm - startKm);
     });
     return map;
-  }, [fleet, einsatz]);
+  }, [einsatz, fleet, dashFilters]);
+
+  // Beschriftung der KM-Spalte im LKW-Ranking, passend zur gröbsten aktuell
+  // gesetzten Zeitfilterung (Woche vor Monat vor Jahr vor eigenem Zeitraum),
+  // damit auf einen Blick klar ist, worauf sich die angezeigte KM-Zahl bezieht.
+  function kmColumnLabel() {
+    if (dashFilters.kw !== "ALLE") return "KM (Woche)";
+    if (dashFilters.monat !== "ALLE") return "KM (Monat)";
+    if (dashFilters.jahr !== "ALLE") return "KM (Jahr)";
+    if (dashFilters.von || dashFilters.bis) return "KM (Zeitraum)";
+    return "KM (gesamt)";
+  }
 
   const perFahrer = useMemo(() => {
     const map = {};
@@ -1123,12 +1155,12 @@ export default function TourenApp() {
                     <tr>
                       <th>LKW</th><th style={{ textAlign: "right" }}>Umsatz</th><th style={{ textAlign: "right" }}>Touren</th>
                       <th style={{ textAlign: "right" }}>Einsatztage</th><th style={{ textAlign: "right" }}>Ø Umsatz/Tag</th>
-                      <th style={{ textAlign: "right" }}>Gesamt-KM</th>
+                      <th style={{ textAlign: "right" }}>{kmColumnLabel()}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {perLkw.map((l) => {
-                      const km = kmPerLkw[l.lkw];
+                      const km = periodKmPerLkw[l.lkw];
                       return (
                         <tr key={l.lkw}>
                           <td>{l.lkw}</td>
