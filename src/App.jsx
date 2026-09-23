@@ -25,6 +25,11 @@ const WARN_BG = "#FDF1DD";
 
 const MONTHS = ["Jan","Feb","Mär","Apr","Mai","Jun","Jul","Aug","Sep","Okt","Nov","Dez"];
 
+// Für Tabellenzellen mit fester Spaltenbreite (table-layout:fixed): lange Werte
+// werden mit "…" abgeschnitten statt die Spalte zu sprengen (voller Wert steht
+// im title-Tooltip).
+const ellipsisCell = { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
+
 // Liefert das lokale Datum (Jahr-Monat-Tag) als YYYY-MM-DD, OHNE über UTC zu
 // gehen. d.toISOString() rechnet erst in UTC um - für Zeitzonen vor UTC (z. B.
 // Deutschland, MEZ/MESZ) kippt das ein lokales Datum auf den Vortag, sobald man
@@ -1747,12 +1752,31 @@ export default function TourenApp() {
                     </div>
                     {b.touren.length > 0 && (
                       <div style={{ overflowX: "auto" }}>
-                        <table style={{ minWidth: 720 }}>
+                        {/* table-layout:fixed + feste Spaltenbreiten (colgroup): ohne das berechnet
+                            jede Block-Tabelle ihre Spaltenbreiten unabhängig vom Inhalt - lange Werte
+                            (z. B. Kunde "Gadot Germany") verschieben dann die Spalten eines Blocks
+                            gegenüber den anderen Blöcken ("Spalten verrutscht" zwischen den LKW-Blöcken). */}
+                        <table style={{ minWidth: 720, tableLayout: "fixed", width: "100%" }}>
+                          <colgroup>
+                            <col style={{ width: "11%" }} />
+                            <col style={{ width: "13%" }} />
+                            <col style={{ width: "20%" }} />
+                            <col style={{ width: "15%" }} />
+                            <col style={{ width: "10%" }} />
+                            <col style={{ width: "10%" }} />
+                            <col style={{ width: "11%" }} />
+                            <col style={{ width: "10%" }} />
+                          </colgroup>
                           <thead>
                             <tr>
-                              <th style={{ whiteSpace: "nowrap" }}>Datum</th><th>Fahrer</th><th>Kunde</th><th>Auftrags-Nr.</th>
-                              <th style={{ whiteSpace: "nowrap" }}>Ankunft</th><th style={{ whiteSpace: "nowrap" }}>Abfahrt</th>
-                              <th style={{ textAlign: "right", whiteSpace: "nowrap" }}>Gesamt</th><th>Status</th>
+                              <th style={{ whiteSpace: "nowrap" }}>Datum</th>
+                              <th style={ellipsisCell}>Fahrer</th>
+                              <th style={ellipsisCell}>Kunde</th>
+                              <th style={ellipsisCell}>Auftrags-Nr.</th>
+                              <th style={{ whiteSpace: "nowrap" }}>Ankunft</th>
+                              <th style={{ whiteSpace: "nowrap" }}>Abfahrt</th>
+                              <th style={{ textAlign: "right", whiteSpace: "nowrap" }}>Gesamt</th>
+                              <th style={{ whiteSpace: "nowrap" }}>Status</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1761,13 +1785,13 @@ export default function TourenApp() {
                               return (
                                 <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer", background: sc.bg }} title="Doppelklick zum Bearbeiten">
                                   <td className="mono" style={{ whiteSpace: "nowrap" }}>{formatDateDMY(t.datum)}</td>
-                                  <td>{t.fahrer}</td>
-                                  <td>{t.kunde}</td>
-                                  <td className="mono">{t.auftragsNr}</td>
+                                  <td className="ellipsis" style={ellipsisCell} title={t.fahrer}>{t.fahrer}</td>
+                                  <td className="ellipsis" style={ellipsisCell} title={t.kunde}>{t.kunde}</td>
+                                  <td className="mono ellipsis" style={ellipsisCell} title={t.auftragsNr}>{t.auftragsNr}</td>
                                   <td className="mono" style={{ whiteSpace: "nowrap" }}>{t.ankunft}</td>
                                   <td className="mono" style={{ whiteSpace: "nowrap" }}>{t.abfahrt}</td>
                                   <td className="mono" style={{ textAlign: "right", whiteSpace: "nowrap" }}>{euro(gesamt(t))}</td>
-                                  <td>
+                                  <td style={{ whiteSpace: "nowrap" }}>
                                     <span style={{ color: sc.text, fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>
                                       {t.status}
                                     </span>
