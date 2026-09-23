@@ -67,6 +67,18 @@ function formatDateShort(d) {
   return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.`;
 }
 
+// Wandelt ein ISO-Datum (YYYY-MM-DD, wie es <input type="date"> und Supabase
+// liefern) für die Anzeige in das gewünschte deutsche Format DD.MM.YYYY um.
+// Die zugrunde liegenden Werte (State, Datenbank, <input type="date">) bleiben
+// bewusst im ISO-Format - nur die Darstellung ändert sich.
+function formatDateDMY(iso) {
+  if (!iso) return "";
+  const parts = iso.split("-");
+  if (parts.length !== 3) return iso;
+  const [y, m, d] = parts;
+  return `${d}.${m}.${y}`;
+}
+
 function euro(n) {
   const v = Number(n) || 0;
   return v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
@@ -137,9 +149,24 @@ const SEED_FLEET = [
   { plate: "OF RY 750", driver: "", startKm: 497576, startKmDatum: "2026-01-01", note: "", startKmHistory: [] },
   { plate: "OF RY 800", driver: "", startKm: 490037, startKmDatum: "2026-01-01", note: "", startKmHistory: [] },
   { plate: "OF RY 850", driver: "", startKm: 436746, startKmDatum: "2026-01-01", note: "", startKmHistory: [] },
-  { plate: "KO-OF 213", driver: "", startKm: 1, startKmDatum: "2026-05-18", note: "Miet-LKW", startKmHistory: [] },
   { plate: "B-CY 3552", driver: "", startKm: 11013, startKmDatum: "2026-07-27", note: "Miet-LKW", startKmHistory: [] },
 ];
+
+// Feste Blockfarben je LKW für die Wochen-Kontrolle, übernommen aus den
+// LKW-Blockköpfen der Original-Excel (KW-Wochenblätter). Miet-LKW (ohne
+// eigene Farbe in der Excel, dort gemeinsam als "Miet-LKW" geführt) sowie
+// künftig neu angelegte Fahrzeuge bekommen die neutrale Grau-Farbe.
+const LKW_BLOCK_COLORS = {
+  "OF RY 500": "#B8CCE4",
+  "OF RY 700": "#C6D6BE",
+  "OF RY 750": "#E0D3B8",
+  "OF RY 800": "#CFC6DA",
+  "OF RY 850": "#B7D6D3",
+  "B-CY 3552": "#D2D2D2",
+};
+function lkwBlockColor(plate) {
+  return LKW_BLOCK_COLORS[plate] || "#E4E7EB";
+}
 
 const SEED_DRIVERS = ["Serdar", "Dawid", "Gregor", "Patryk", "Artur", "Sabri", "Hakan", "Özgür", "Ersatzfahrer"];
 
@@ -225,10 +252,14 @@ function gesamt(t) {
   return COSTFIELDS.reduce((sum, k) => sum + (Number(t[k]) || 0), 0);
 }
 
+// Farben 1:1 aus der Original-Excel übernommen (bedingte Formatierung je
+// Status-Wert in den KW-Wochenblättern): Offen = Gelb, Reklamiert = Orange,
+// Abgerechnet = Grün. Werden sowohl für den Zeilenhintergrund der
+// Touren-Tabellen als auch für den Status-Text selbst verwendet.
 function statusColors(status) {
-  if (status === "Reklamiert") return { bg: DANGER_BG, text: DANGER };
-  if (status === "Abgerechnet") return { bg: "#EDEFF2", text: TEXT_MUTED };
-  return { bg: WARN_BG, text: AMBER_DARK };
+  if (status === "Reklamiert") return { bg: "#FF9966", text: "#7A2E00" };
+  if (status === "Abgerechnet") return { bg: "#99FF99", text: "#1B5E20" };
+  return { bg: "#FFFF99", text: "#6B5900" };
 }
 
 export default function TourenApp() {
@@ -807,6 +838,26 @@ export default function TourenApp() {
       .sort((a, b) => b.umsatz - a.umsatz);
   }, [dashTours]);
 
+  // Gefahrene KM je LKW insgesamt (seit dem in den Stammdaten hinterlegten
+  // Start-KM), unabhängig von den Dashboard-Datumsfiltern - basiert auf dem
+  // zuletzt erfassten Ende-KM im Einsatzplan, nicht auf den gefilterten
+  // Touren. Ergebnis als Lookup je Kennzeichen für die LKW-Ranking-Tabelle.
+  const kmPerLkw = useMemo(() => {
+    const map = {};
+    fleet.forEach((f) => {
+      const weeksWithEnd = einsatz.filter(
+        (e) => e.lkw === f.plate && e.endKm !== undefined && e.endKm !== "" && e.endKm !== null
+      );
+      if (weeksWithEnd.length === 0 || f.startKm === undefined || f.startKm === "") {
+        map[f.plate] = null;
+        return;
+      }
+      const latest = weeksWithEnd.reduce((a, b) => (weekKey(b.jahr, b.kw) > weekKey(a.jahr, a.kw) ? b : a));
+      map[f.plate] = Number(latest.endKm) - Number(f.startKm);
+    });
+    return map;
+  }, [fleet, einsatz]);
+
   const perFahrer = useMemo(() => {
     const map = {};
     dashTours.forEach((t) => {
@@ -1064,18 +1115,28 @@ export default function TourenApp() {
               {perLkw.length > 0 && (
                 <table>
                   <thead>
-                    <tr><th>LKW</th><th style={{ textAlign: "right" }}>Umsatz</th><th style={{ textAlign: "right" }}>Touren</th><th style={{ textAlign: "right" }}>Einsatztage</th><th style={{ textAlign: "right" }}>Ø Umsatz/Tag</th></tr>
+                    <tr>
+                      <th>LKW</th><th style={{ textAlign: "right" }}>Umsatz</th><th style={{ textAlign: "right" }}>Touren</th>
+                      <th style={{ textAlign: "right" }}>Einsatztage</th><th style={{ textAlign: "right" }}>Ø Umsatz/Tag</th>
+                      <th style={{ textAlign: "right" }}>Gesamt-KM</th>
+                    </tr>
                   </thead>
                   <tbody>
-                    {perLkw.map((l) => (
-                      <tr key={l.lkw}>
-                        <td>{l.lkw}</td>
-                        <td className="mono" style={{ textAlign: "right" }}>{euro0(l.umsatz)}</td>
-                        <td className="mono" style={{ textAlign: "right" }}>{l.touren}</td>
-                        <td className="mono" style={{ textAlign: "right" }}>{l.einsatztage}</td>
-                        <td className="mono" style={{ textAlign: "right" }}>{euro0(l.proTag)}</td>
-                      </tr>
-                    ))}
+                    {perLkw.map((l) => {
+                      const km = kmPerLkw[l.lkw];
+                      return (
+                        <tr key={l.lkw}>
+                          <td>{l.lkw}</td>
+                          <td className="mono" style={{ textAlign: "right" }}>{euro0(l.umsatz)}</td>
+                          <td className="mono" style={{ textAlign: "right" }}>{l.touren}</td>
+                          <td className="mono" style={{ textAlign: "right" }}>{l.einsatztage}</td>
+                          <td className="mono" style={{ textAlign: "right" }}>{euro0(l.proTag)}</td>
+                          <td className="mono" style={{ textAlign: "right" }}>
+                            {km === null || km === undefined ? "–" : `${km.toLocaleString("de-DE")} km`}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
@@ -1136,15 +1197,15 @@ export default function TourenApp() {
                 {tours.slice().sort((a, b) => (b.datum || "").localeCompare(a.datum || "")).map((t) => {
                   const sc = statusColors(t.status);
                   return (
-                    <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer" }} title="Doppelklick zum Bearbeiten">
-                      <td className="mono">{t.datum}</td>
+                    <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer", background: sc.bg }} title="Doppelklick zum Bearbeiten">
+                      <td className="mono">{formatDateDMY(t.datum)}</td>
                       <td className="mono">{t.lkw}</td>
                       <td>{t.fahrer}</td>
                       <td>{t.kunde}</td>
                       <td className="mono">{t.auftragsNr}</td>
                       <td className="mono" style={{ textAlign: "right" }}>{euro(gesamt(t))}</td>
                       <td>
-                        <span style={{ background: sc.bg, color: sc.text, fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20 }}>
+                        <span style={{ color: sc.text, fontSize: 12, fontWeight: 700 }}>
                           {t.status}
                         </span>
                       </td>
@@ -1183,15 +1244,15 @@ export default function TourenApp() {
                   {reklamationTours.map((t) => {
                     const sc = statusColors(t.status);
                     return (
-                      <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer" }} title="Doppelklick zum Bearbeiten">
-                        <td className="mono">{t.datum}</td>
+                      <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer", background: sc.bg }} title="Doppelklick zum Bearbeiten">
+                        <td className="mono">{formatDateDMY(t.datum)}</td>
                         <td className="mono">{t.lkw}</td>
                         <td>{t.fahrer}</td>
                         <td>{t.kunde}</td>
                         <td className="mono">{t.auftragsNr}</td>
                         <td className="mono" style={{ textAlign: "right" }}>{euro(gesamt(t))}</td>
                         <td>
-                          <span style={{ background: sc.bg, color: sc.text, fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20 }}>
+                          <span style={{ color: sc.text, fontSize: 12, fontWeight: 700 }}>
                             {t.status}
                           </span>
                         </td>
@@ -1449,15 +1510,15 @@ export default function TourenApp() {
                   {searchResults.map((t) => {
                     const sc = statusColors(t.status);
                     return (
-                      <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer" }} title="Doppelklick zum Bearbeiten">
-                        <td className="mono">{t.datum}</td>
+                      <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer", background: sc.bg }} title="Doppelklick zum Bearbeiten">
+                        <td className="mono">{formatDateDMY(t.datum)}</td>
                         <td className="mono">{t.lkw}</td>
                         <td>{t.kunde}</td>
                         <td className="mono">{t.containerNr}</td>
                         <td className="mono">{t.plz}</td>
                         <td>{t.ort}</td>
                         <td className="mono" style={{ textAlign: "right" }}>{euro(gesamt(t))}</td>
-                        <td><span style={{ background: sc.bg, color: sc.text, fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20 }}>{t.status}</span></td>
+                        <td><span style={{ color: sc.text, fontSize: 12, fontWeight: 700 }}>{t.status}</span></td>
                         <td><button className="ghost" onClick={() => openEdit(t)} style={{ padding: "4px 8px" }}><Pencil size={13} /></button></td>
                       </tr>
                     );
@@ -1652,7 +1713,7 @@ export default function TourenApp() {
                   <div key={b.plate} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden", opacity: inactive ? 0.65 : 1 }}>
                     <div style={{
                       display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8,
-                      padding: "12px 16px", background: "#F7F8FA", borderBottom: `1px solid ${BORDER}`,
+                      padding: "12px 16px", background: lkwBlockColor(b.plate), borderBottom: `1px solid ${BORDER}`,
                     }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                         <span className="mono" style={{ fontSize: 14, fontWeight: 600 }}>{b.plate}</span>
@@ -1687,8 +1748,8 @@ export default function TourenApp() {
                           {b.touren.map((t) => {
                             const sc = statusColors(t.status);
                             return (
-                              <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer" }} title="Doppelklick zum Bearbeiten">
-                                <td className="mono">{t.datum}</td>
+                              <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer", background: sc.bg }} title="Doppelklick zum Bearbeiten">
+                                <td className="mono">{formatDateDMY(t.datum)}</td>
                                 <td>{t.fahrer}</td>
                                 <td>{t.kunde}</td>
                                 <td className="mono">{t.auftragsNr}</td>
@@ -1696,7 +1757,7 @@ export default function TourenApp() {
                                 <td className="mono">{t.abfahrt}</td>
                                 <td className="mono" style={{ textAlign: "right" }}>{euro(gesamt(t))}</td>
                                 <td>
-                                  <span style={{ background: sc.bg, color: sc.text, fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20 }}>
+                                  <span style={{ color: sc.text, fontSize: 12, fontWeight: 700 }}>
                                     {t.status}
                                   </span>
                                 </td>
@@ -1730,7 +1791,7 @@ export default function TourenApp() {
               {importPreview && (
                 <div style={{ marginTop: 16 }}>
                   <div style={{ fontSize: 12.5, marginBottom: 10 }}>
-                    Beispiel (erste Zeile): {importPreview[0]?.datum} · {importPreview[0]?.lkw} ·{" "}
+                    Beispiel (erste Zeile): {formatDateDMY(importPreview[0]?.datum)} · {importPreview[0]?.lkw} ·{" "}
                     {importPreview[0]?.kunde || "(kein Kunde)"} · {euro(gesamt(importPreview[0] || {}))}
                   </div>
                   <button className="primary" onClick={confirmImport}>
@@ -1772,7 +1833,7 @@ export default function TourenApp() {
                             <span className="mono" style={{ color: TEXT, fontWeight: 500 }}>
                               {f.startKm !== undefined && f.startKm !== "" ? Number(f.startKm).toLocaleString("de-DE") : "–"}
                             </span>
-                            {f.startKmDatum ? ` (ab ${f.startKmDatum})` : ""}
+                            {f.startKmDatum ? ` (ab ${formatDateDMY(f.startKmDatum)})` : ""}
                           </span>
                           <button className="ghost" style={{ padding: "2px 6px" }} title="Start-KM bearbeiten" onClick={() => startEditKm(f)}>
                             <Pencil size={11} />
@@ -1800,9 +1861,9 @@ export default function TourenApp() {
                         <div style={{ background: WARN_BG, borderRadius: 8, padding: "8px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
                           <span style={{ fontSize: 11.5, color: AMBER_DARK, fontWeight: 500 }}>
                             Start-KM von {f.startKm !== undefined && f.startKm !== "" ? Number(f.startKm).toLocaleString("de-DE") : "–"}
-                            {f.startKmDatum ? ` (ab ${f.startKmDatum})` : ""} auf{" "}
+                            {f.startKmDatum ? ` (ab ${formatDateDMY(f.startKmDatum)})` : ""} auf{" "}
                             {editKmValue !== "" ? Number(editKmValue).toLocaleString("de-DE") : "–"}
-                            {editKmDatum ? ` (ab ${editKmDatum})` : ""} ändern?
+                            {editKmDatum ? ` (ab ${formatDateDMY(editKmDatum)})` : ""} ändern?
                           </span>
                           <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
                             <button className="ghost" onClick={cancelEditKm}>Abbrechen</button>
@@ -1815,9 +1876,9 @@ export default function TourenApp() {
                         <div style={{ marginTop: 6, fontSize: 10.5, color: TEXT_MUTED }}>
                           {f.startKmHistory.slice().reverse().map((h) => (
                             <div key={h.id}>
-                              {h.changedAt}: {h.from !== "" ? Number(h.from).toLocaleString("de-DE") : "–"}{h.fromDatum ? ` (ab ${h.fromDatum})` : ""}
+                              {formatDateDMY(h.changedAt)}: {h.from !== "" ? Number(h.from).toLocaleString("de-DE") : "–"}{h.fromDatum ? ` (ab ${formatDateDMY(h.fromDatum)})` : ""}
                               {" → "}
-                              {h.to !== "" ? Number(h.to).toLocaleString("de-DE") : "–"}{h.toDatum ? ` (ab ${h.toDatum})` : ""}
+                              {h.to !== "" ? Number(h.to).toLocaleString("de-DE") : "–"}{h.toDatum ? ` (ab ${formatDateDMY(h.toDatum)})` : ""}
                             </div>
                           ))}
                         </div>
@@ -1934,7 +1995,7 @@ export default function TourenApp() {
             <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden", marginBottom: 18 }}>
               {dupWarning.map((t) => (
                 <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderBottom: `1px solid ${BORDER}` }}>
-                  <span className="mono" style={{ fontSize: 12.5, width: 90 }}>{t.datum}</span>
+                  <span className="mono" style={{ fontSize: 12.5, width: 90 }}>{formatDateDMY(t.datum)}</span>
                   <span className="mono" style={{ fontSize: 12.5, width: 80 }}>{t.lkw}</span>
                   <span style={{ fontSize: 12.5, flex: 1 }}>{t.kunde}</span>
                   <span style={{ fontSize: 11, fontWeight: 600, color: statusColors(t.status).text, background: statusColors(t.status).bg, padding: "2px 8px", borderRadius: 20 }}>{t.status}</span>
