@@ -18,6 +18,13 @@ import { supabase } from "./supabaseClient";
 function emptyToNull(v) {
   return v === "" || v === undefined ? null : v;
 }
+// Für Spalten, die in der DB als NOT NULL mit Standardwert 0 definiert sind
+// (fracht, fd, adr, multistop, wartezeit, maut, diesel). Ein explizites
+// null würde den Spalten-Default umgehen und die NOT-NULL-Constraint
+// verletzen ("Speichern fehlgeschlagen") - daher hier 0 statt null.
+function emptyToZero(v) {
+  return v === "" || v === undefined || v === null ? 0 : v;
+}
 function nullToEmpty(v) {
   return v === null || v === undefined ? "" : v;
 }
@@ -40,14 +47,14 @@ const tourToDb = (t) => ({
   ankunft: emptyToNull(t.ankunft),
   abfahrt: emptyToNull(t.abfahrt),
   km: emptyToNull(t.km),
-  fracht: emptyToNull(t.fracht),
-  fd: emptyToNull(t.fd),
-  adr: emptyToNull(t.adr),
-  multistop: emptyToNull(t.multistop),
-  wartezeit: emptyToNull(t.wartezeit),
-  maut: emptyToNull(t.maut),
-  diesel: emptyToNull(t.diesel),
-  bemerkungen: emptyToNull(t.bemerkungen),
+  fracht: emptyToZero(t.fracht),
+  fd: emptyToZero(t.fd),
+  adr: emptyToZero(t.adr),
+  multistop: emptyToZero(t.multistop),
+  wartezeit: emptyToZero(t.wartezeit),
+  maut: emptyToZero(t.maut),
+  diesel: emptyToZero(t.diesel),
+  bemerkungen: t.bemerkungen || "",
   status: emptyToNull(t.status),
 });
 
