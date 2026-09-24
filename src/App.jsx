@@ -1095,7 +1095,7 @@ export default function TourenApp() {
   }
 
   return (
-    <div style={{ fontFamily: "'Space Grotesk', sans-serif", background: BG, minHeight: 600, color: TEXT }}>
+    <div style={{ fontFamily: "'Space Grotesk', sans-serif", background: BG, minHeight: "100vh", color: TEXT, display: "flex" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
         .mono { font-family: 'IBM Plex Mono', monospace; }
@@ -1133,52 +1133,57 @@ export default function TourenApp() {
         button.ghost:hover { border-color: ${MARINE}; }
       `}</style>
 
-      <div style={{ background: MARINE, padding: "18px 28px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div>
+      {/* Hauptnavigation als linke Seitenleiste (statt oben) - auf Nutzerwunsch,
+          moderneres Layout. Bleibt beim Scrollen des Inhalts stehen (sticky). */}
+      <div style={{
+        width: 226, flexShrink: 0, background: MARINE, display: "flex", flexDirection: "column",
+        padding: "22px 0", position: "sticky", top: 0, alignSelf: "flex-start", height: "100vh", overflowY: "auto",
+      }}>
+        <div style={{ padding: "0 22px", marginBottom: 28 }}>
           <div style={{ color: "#fff", fontSize: 18, fontWeight: 600, letterSpacing: 0.2 }}>Tourenliste</div>
-          <div style={{ color: "#9FB3C4", fontSize: 12, marginTop: 2 }}>Fuhrpark &amp; Touren, geteilt für alle</div>
+          <div style={{ color: "#9FB3C4", fontSize: 11.5, marginTop: 3, lineHeight: 1.4 }}>Fuhrpark &amp; Touren, geteilt für alle</div>
+          <div style={{ height: 3, width: 40, background: AMBER, borderRadius: 2, marginTop: 12 }} />
         </div>
-        <div style={{ height: 3, width: 48, background: AMBER, borderRadius: 2 }} />
+        <nav style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+          {tabs.map((t) => {
+            const Icon = t.icon;
+            const active = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                style={{
+                  background: active ? "rgba(255,255,255,0.09)" : "none",
+                  border: "none", cursor: "pointer", width: "100%", textAlign: "left",
+                  borderLeft: active ? `3px solid ${AMBER}` : "3px solid transparent",
+                  padding: "11px 19px", fontSize: 13, fontWeight: 500,
+                  display: "flex", alignItems: "center", gap: 10,
+                  color: active ? "#fff" : "#9FB3C4",
+                }}
+              >
+                <Icon size={16} /> {t.label}
+              </button>
+            );
+          })}
+        </nav>
       </div>
 
-      {storageError && (
-        <div style={{
-          background: DANGER_BG, color: DANGER, fontSize: 12.5, fontWeight: 500,
-          padding: "10px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
-        }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <AlertTriangle size={14} /> {storageError}
-          </span>
-          <button className="ghost" style={{ padding: "3px 8px", borderColor: DANGER, color: DANGER }} onClick={() => setStorageError("")}>
-            <X size={12} />
-          </button>
-        </div>
-      )}
-
-      <div style={{ display: "flex", gap: 4, padding: "12px 28px 0", borderBottom: `1px solid ${BORDER}`, background: CARD }}>
-        {tabs.map((t) => {
-          const Icon = t.icon;
-          const active = tab === t.id;
-          return (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              style={{
-                background: "none", border: "none", cursor: "pointer",
-                padding: "10px 16px", fontSize: 13, fontWeight: 500,
-                display: "flex", alignItems: "center", gap: 6,
-                color: active ? MARINE : TEXT_MUTED,
-                borderBottom: active ? `2px solid ${AMBER}` : "2px solid transparent",
-                marginBottom: -1,
-              }}
-            >
-              <Icon size={15} /> {t.label}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        {storageError && (
+          <div style={{
+            background: DANGER_BG, color: DANGER, fontSize: 12.5, fontWeight: 500,
+            padding: "10px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+          }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <AlertTriangle size={14} /> {storageError}
+            </span>
+            <button className="ghost" style={{ padding: "3px 8px", borderColor: DANGER, color: DANGER }} onClick={() => setStorageError("")}>
+              <X size={12} />
             </button>
-          );
-        })}
-      </div>
+          </div>
+        )}
 
-      <div style={{ padding: 28 }}>
+        <div style={{ padding: 28 }}>
         {tab === "dashboard" && (
           <div>
             <PageHeading icon={LayoutDashboard} title="Dashboard" subtitle="Umsatz, Touren und Kennzahlen im Überblick" />
@@ -2307,6 +2312,7 @@ export default function TourenApp() {
             </div>
           </div>
         )}
+      </div>
       </div>
 
       {dupWarning && (
