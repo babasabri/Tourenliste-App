@@ -5,7 +5,7 @@ import {
 } from "recharts";
 import {
   LayoutDashboard, Truck, PlusCircle, Search as SearchIcon, Users,
-  Fuel, X, Save, Trash2, Pencil, AlertTriangle, CalendarClock, Upload, ListChecks,
+  Fuel, X, Save, Trash2, Pencil, AlertTriangle, CalendarClock, Upload, ListChecks, RefreshCw,
 } from "lucide-react";
 import * as db from "./db";
 
@@ -89,11 +89,6 @@ function euro(n) {
   return v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
 }
 
-function euro0(n) {
-  const v = Number(n) || 0;
-  return Math.round(v).toLocaleString("de-DE") + " €";
-}
-
 function uid() {
   // Echte UUID statt kurzer Zufalls-Strings - die id-Spalten in Supabase
   // sind vom Typ uuid, das muss also zusammenpassen.
@@ -108,6 +103,10 @@ const emptyForm = {
 };
 
 const COSTFIELDS = ["fracht", "fd", "adr", "multistop", "wartezeit", "maut", "diesel"];
+const COSTFIELD_LABELS = {
+  fracht: "Fracht", fd: "FD", adr: "ADR", multistop: "Multistop",
+  wartezeit: "Wartezeit", maut: "Maut", diesel: "Diesel",
+};
 
 // Pflichtfelder: eine Tour darf nur gespeichert werden, wenn all diese Felder
 // ausgefüllt sind. Kostenfelder (außer Fracht/Maut/Diesel, s. Vorschlagswerte)
@@ -140,6 +139,16 @@ function missingLabel(keys) {
 
 function fieldStyle(key, errors) {
   return errors.includes(key) ? { borderColor: DANGER, background: DANGER_BG } : undefined;
+}
+
+// Status-Auswahl soll immer farbig erkennbar sein (wie die Status-Badges in
+// den Tabellen) - bei fehlendem Wert greift wie gewohnt die Fehler-Markierung.
+function statusFieldStyle(status, errors) {
+  if (status) {
+    const sc = statusColors(status);
+    return { background: sc.bg, color: sc.text, fontWeight: 700, borderColor: sc.text };
+  }
+  return fieldStyle("status", errors);
 }
 
 // Preisreferenz für "Neue Tour" (Infobox rechts). Reine Anzeige/Hilfe - wird
@@ -175,18 +184,41 @@ function lkwBlockColor(plate) {
 
 const SEED_DRIVERS = ["Serdar", "Dawid", "Gregor", "Patryk", "Artur", "Sabri", "Hakan", "Özgür", "Ersatzfahrer"];
 
+// range = Anzeige in der Infobox, max/betrag = Grundlage für die automatische
+// Fracht-Berechnung aus dem Abrechnungs-KM-Feld (siehe calcFracht).
 const STAFFELRATEN = [
-  ["01 – 20", "122,00"],
-  ["21 – 30", "142,00"],
-  ["31 – 40", "158,00"],
-  ["41 – 50", "173,00"],
-  ["51 – 60", "190,00"],
-  ["61 – 70", "209,00"],
-  ["71 – 80", "220,00"],
-  ["81 – 90", "233,00"],
-  ["91 – 100", "244,00"],
-  ["101 – 110", "255,00"],
+  { range: "01 – 20", max: 20, betrag: 122 },
+  { range: "21 – 30", max: 30, betrag: 142 },
+  { range: "31 – 40", max: 40, betrag: 158 },
+  { range: "41 – 50", max: 50, betrag: 173 },
+  { range: "51 – 60", max: 60, betrag: 190 },
+  { range: "61 – 70", max: 70, betrag: 209 },
+  { range: "71 – 80", max: 80, betrag: 220 },
+  { range: "81 – 90", max: 90, betrag: 233 },
+  { range: "91 – 100", max: 100, betrag: 244 },
+  { range: "101 – 110", max: 110, betrag: 255 },
 ];
+// Ab KM 111: Grundbetrag der letzten Staffel (255 €, bis 110 KM) plus die
+// restlichen KM mit diesem Satz je KM.
+const STAFFEL_KM_PREIS = 2.4;
+
+// Fracht automatisch aus den Staffelraten berechnen, sobald Abrechnungs-KM
+// eingetragen wird (siehe "Neue Tour"/"Tour bearbeiten"). Bis 110 KM gilt der
+// passende Staffel-Betrag, ab 111 KM der Grundbetrag der letzten Staffel plus
+// die darüber hinausgehenden KM à 2,40 €.
+function calcFracht(km) {
+  const k = Number(km);
+  if (!k || k <= 0) return "";
+  const letzteStaffel = STAFFELRATEN[STAFFELRATEN.length - 1];
+  let betrag;
+  if (k <= letzteStaffel.max) {
+    const bracket = STAFFELRATEN.find((s) => k <= s.max);
+    betrag = bracket ? bracket.betrag : letzteStaffel.betrag;
+  } else {
+    betrag = letzteStaffel.betrag + (k - letzteStaffel.max) * STAFFEL_KM_PREIS;
+  }
+  return Math.round(betrag * 100) / 100;
+}
 
 const TERMINALRATEN = [
   { terminal: "Frankfurt-Ost (DBI / TFG / Contargo)", betrag: "50,00", note: "inkl. Maut, TFS" },
@@ -207,10 +239,12 @@ function RatesInfoBox() {
             <tr><th>KM</th><th style={{ textAlign: "right" }}>Betrag</th></tr>
           </thead>
           <tbody>
-            {STAFFELRATEN.map(([km, betrag]) => (
-              <tr key={km}>
-                <td className="mono" style={{ fontSize: 12, padding: "6px 4px" }}>{km}</td>
-                <td className="mono" style={{ fontSize: 12, padding: "6px 4px", textAlign: "right" }}>€ {betrag}</td>
+            {STAFFELRATEN.map((s) => (
+              <tr key={s.range}>
+                <td className="mono" style={{ fontSize: 12, padding: "6px 4px" }}>{s.range}</td>
+                <td className="mono" style={{ fontSize: 12, padding: "6px 4px", textAlign: "right" }}>
+                  € {s.betrag.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </td>
               </tr>
             ))}
             <tr>
@@ -278,6 +312,12 @@ export default function TourenApp() {
   const [editForm, setEditForm] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [search, setSearch] = useState({ nr: "", containerNr: "", kunde: "", plz: "", ort: "", lkw: "", status: "" });
+  // Suche: id der Tour, deren Status gerade per Schnellauswahl geändert wird
+  // (Klick auf "Status ändern" neben "Bearbeiten") - ohne das volle
+  // Bearbeiten-Fenster zu öffnen.
+  const [quickStatusId, setQuickStatusId] = useState(null);
+  // Touren-Tab: Monatsfilter oberhalb der Liste.
+  const [tourenMonat, setTourenMonat] = useState("ALLE");
   const [dashFilters, setDashFilters] = useState({
     jahr: "ALLE", lkw: "ALLE", fahrer: "ALLE", monat: "ALLE", kw: "ALLE",
     von: "", bis: "",
@@ -593,12 +633,26 @@ export default function TourenApp() {
     return matches.reduce((a, b) => (a.datum > b.datum ? a : b));
   }
 
-  function avgFor(kunde, field) {
-    if (!kunde) return null;
-    const matches = tours.filter((t) => (t.kunde || "").toLowerCase() === kunde.toLowerCase());
+  // Diesel-Index-Betrag für einen bestimmten Monat/Jahr - falls für denselben
+  // Monat mehrere Einträge erfasst wurden (bewusst nie überschrieben, siehe
+  // addDieselIndex), zählt der zuletzt erfasste (jüngstes created_at).
+  function dieselIndexFor(jahr, monat) {
+    if (!jahr || !monat) return null;
+    const matches = dieselIndex.filter((d) => Number(d.jahr) === Number(jahr) && Number(d.monat) === Number(monat));
     if (!matches.length) return null;
-    const sum = matches.reduce((s, t) => s + (Number(t[field]) || 0), 0);
-    return sum / matches.length;
+    const latest = matches.reduce((a, b) => (new Date(b.createdAt) > new Date(a.createdAt) ? b : a));
+    return Number(latest.betrag);
+  }
+
+  // Diesel automatisch aus dem Diesel-Index des Monats/Jahres der Tour
+  // berechnen, abgerechnet je angefangene 10 KM (aufgerundet).
+  function calcDiesel(km, datum) {
+    const k = Number(km);
+    if (!k || k <= 0 || !datum) return "";
+    const rate = dieselIndexFor(Number(datum.slice(0, 4)), Number(datum.slice(5, 7)));
+    if (rate === null) return "";
+    const einheiten = Math.ceil(k / 10);
+    return Math.round(einheiten * rate * 100) / 100;
   }
 
   function driverForPlate(plate) {
@@ -626,10 +680,14 @@ export default function TourenApp() {
   }
 
   function handleDatumChange(datum, setter, current, autoFillFahrer = true) {
+    // Diesel hängt vom Monat der Tour ab (Diesel-Index) - bei bereits
+    // eingetragenem KM wird er hier mit dem neuen Datum neu berechnet.
+    const diesel = calcDiesel(current.km, datum);
     setter({
       ...current,
       datum,
       fahrer: autoFillFahrer && current.lkw ? driverForWeek(current.lkw, datum) : current.fahrer,
+      ...(diesel !== "" ? { diesel } : {}),
     });
   }
 
@@ -698,6 +756,13 @@ export default function TourenApp() {
     setConfirmDelete(false);
   }
 
+  // Schnellauswahl "Status ändern" in der Suche: ändert nur den Status,
+  // ohne das Bearbeiten-Fenster zu öffnen.
+  function quickChangeStatus(id, status) {
+    persistTours(tours.map((t) => (t.id === id ? { ...t, status } : t)));
+    setQuickStatusId(null);
+  }
+
   const searchResults = useMemo(() => {
     const hasAny = Object.values(search).some(Boolean);
     if (!hasAny) return [];
@@ -722,6 +787,23 @@ export default function TourenApp() {
       .slice()
       .sort((a, b) => (a.datum || "").localeCompare(b.datum || ""));
   }, [tours]);
+
+  // Mini-Dashboard oben in Reklamationen: Anzahl + Summe je Status.
+  const reklamationStats = useMemo(() => {
+    const build = (status) => {
+      const matches = tours.filter((t) => t.status === status);
+      return { anzahl: matches.length, summe: matches.reduce((s, t) => s + gesamt(t), 0) };
+    };
+    return { offen: build("Offen"), reklamiert: build("Reklamiert") };
+  }, [tours]);
+
+  // Touren-Tab: Liste inkl. Monatsfilter, neueste zuerst.
+  const tourenList = useMemo(() => {
+    return tours
+      .filter((t) => tourenMonat === "ALLE" || Number((t.datum || "").slice(5, 7)) === Number(tourenMonat))
+      .slice()
+      .sort((a, b) => (b.datum || "").localeCompare(a.datum || ""));
+  }, [tours, tourenMonat]);
 
   const years = useMemo(() => {
     const s = new Set(tours.map((t) => (t.datum || "").slice(0, 4)).filter(Boolean));
@@ -935,10 +1017,11 @@ export default function TourenApp() {
   }, [dashTours]);
 
   const suggestedFahrer = driverForWeek(form.lkw, form.datum);
+  // Fracht und Diesel werden automatisch aus Staffelrate/Diesel-Index berechnet
+  // (siehe calcFracht/calcDiesel) - nur bei Maut bleibt ein echter Vorschlag
+  // nötig, und zwar cent-genau aus der letzten Tour desselben Kunden statt
+  // eines Durchschnitts.
   const lastTour = lastTourFor(form.kunde);
-  const avgFracht = avgFor(form.kunde, "fracht");
-  const avgMaut = avgFor(form.kunde, "maut");
-  const avgDiesel = avgFor(form.kunde, "diesel");
 
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -1101,10 +1184,10 @@ export default function TourenApp() {
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 14, marginBottom: 24 }}>
               {[
-                { label: "Umsatz", val: euro0(kpi.umsatz) },
+                { label: "Umsatz", val: euro(kpi.umsatz) },
                 { label: "Touren", val: kpi.anzahl },
                 { label: "Einsatztage", val: kpi.einsatztage },
-                { label: "Ø pro Einsatztag", val: euro0(kpi.avg) },
+                { label: "Ø pro Einsatztag", val: euro(kpi.avg) },
                 { label: "Offen / Reklamiert", val: `${kpi.offen} / ${kpi.reklamiert}` },
               ].map((k) => (
                 <div key={k.label} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
@@ -1126,7 +1209,7 @@ export default function TourenApp() {
                     <CartesianGrid strokeDasharray="3 3" stroke={BORDER} vertical={false} />
                     <XAxis dataKey="lkw" tick={{ fontSize: 11, fill: TEXT_MUTED }} />
                     <YAxis tick={{ fontSize: 11, fill: TEXT_MUTED }} width={50} />
-                    <Tooltip formatter={(v) => euro0(v)} contentStyle={{ fontSize: 12, borderRadius: 6 }} />
+                    <Tooltip formatter={(v) => euro(v)} contentStyle={{ fontSize: 12, borderRadius: 6 }} />
                     <Bar dataKey="umsatz" radius={[4, 4, 0, 0]}>
                       {perLkw.map((_, i) => <Cell key={i} fill={i === 0 ? AMBER : MARINE_LIGHT} />)}
                     </Bar>
@@ -1140,7 +1223,7 @@ export default function TourenApp() {
                 {topKunden.map((k, i) => (
                   <div key={k.kunde} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: i < topKunden.length - 1 ? `1px solid ${BORDER}` : "none" }}>
                     <span style={{ fontSize: 12.5 }}>{k.kunde}</span>
-                    <span className="mono" style={{ fontSize: 12.5, fontWeight: 500 }}>{euro0(k.umsatz)}</span>
+                    <span className="mono" style={{ fontSize: 12.5, fontWeight: 500 }}>{euro(k.umsatz)}</span>
                   </div>
                 ))}
               </div>
@@ -1164,10 +1247,10 @@ export default function TourenApp() {
                       return (
                         <tr key={l.lkw}>
                           <td>{l.lkw}</td>
-                          <td className="mono" style={{ textAlign: "right" }}>{euro0(l.umsatz)}</td>
+                          <td className="mono" style={{ textAlign: "right" }}>{euro(l.umsatz)}</td>
                           <td className="mono" style={{ textAlign: "right" }}>{l.touren}</td>
                           <td className="mono" style={{ textAlign: "right" }}>{l.einsatztage}</td>
-                          <td className="mono" style={{ textAlign: "right" }}>{euro0(l.proTag)}</td>
+                          <td className="mono" style={{ textAlign: "right" }}>{euro(l.proTag)}</td>
                           <td className="mono" style={{ textAlign: "right" }}>
                             {km === null || km === undefined ? "–" : `${km.toLocaleString("de-DE")} km`}
                           </td>
@@ -1191,10 +1274,10 @@ export default function TourenApp() {
                     {perFahrer.map((f) => (
                       <tr key={f.fahrer}>
                         <td>{f.fahrer}</td>
-                        <td className="mono" style={{ textAlign: "right" }}>{euro0(f.umsatz)}</td>
+                        <td className="mono" style={{ textAlign: "right" }}>{euro(f.umsatz)}</td>
                         <td className="mono" style={{ textAlign: "right" }}>{f.touren}</td>
                         <td className="mono" style={{ textAlign: "right" }}>{f.einsatztage}</td>
-                        <td className="mono" style={{ textAlign: "right" }}>{euro0(f.proTag)}</td>
+                        <td className="mono" style={{ textAlign: "right" }}>{euro(f.proTag)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1209,7 +1292,7 @@ export default function TourenApp() {
                   <CartesianGrid strokeDasharray="3 3" stroke={BORDER} vertical={false} />
                   <XAxis dataKey="name" tick={{ fontSize: 11, fill: TEXT_MUTED }} />
                   <YAxis tick={{ fontSize: 11, fill: TEXT_MUTED }} width={50} />
-                  <Tooltip formatter={(v) => euro0(v)} contentStyle={{ fontSize: 12, borderRadius: 6 }} />
+                  <Tooltip formatter={(v) => euro(v)} contentStyle={{ fontSize: 12, borderRadius: 6 }} />
                   <Line type="monotone" dataKey="umsatz" stroke={AMBER} strokeWidth={2.5} dot={{ r: 3, fill: AMBER }} />
                 </LineChart>
               </ResponsiveContainer>
@@ -1218,45 +1301,64 @@ export default function TourenApp() {
         )}
 
         {tab === "touren" && (
-          <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
-            <div style={{ overflowX: "auto" }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Datum</th><th>LKW</th><th>Fahrer</th><th>Kunde</th>
-                  <th>Auftrags-Nr.</th><th style={{ textAlign: "right" }}>Gesamt</th>
-                  <th>Status</th><th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {tours.length === 0 && (
-                  <tr><td colSpan={8} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>Noch keine Touren erfasst.</td></tr>
-                )}
-                {tours.slice().sort((a, b) => (b.datum || "").localeCompare(a.datum || "")).map((t) => {
-                  const sc = statusColors(t.status);
-                  return (
-                    <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer", background: sc.bg }} title="Doppelklick zum Bearbeiten">
-                      <td className="mono">{formatDateDMY(t.datum)}</td>
-                      <td className="mono">{t.lkw}</td>
-                      <td>{t.fahrer}</td>
-                      <td>{t.kunde}</td>
-                      <td className="mono">{t.auftragsNr}</td>
-                      <td className="mono" style={{ textAlign: "right" }}>{euro(gesamt(t))}</td>
-                      <td>
-                        <span style={{ color: sc.text, fontSize: 12, fontWeight: 700 }}>
-                          {t.status}
-                        </span>
-                      </td>
-                      <td>
-                        <button className="ghost" onClick={() => openEdit(t)} style={{ padding: "4px 8px" }}>
-                          <Pencil size={13} />
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 12, marginBottom: 14 }}>
+              <div style={{ width: 160 }}>
+                <label>Monat</label>
+                <select value={tourenMonat} onChange={(e) => setTourenMonat(e.target.value)}>
+                  <option value="ALLE">Alle</option>
+                  {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
+              <div style={{ overflowX: "auto" }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Datum</th><th>KW</th><th>LKW</th><th>Fahrer</th><th>Kunde</th>
+                    <th>Auftrags-Nr.</th>
+                    {COSTFIELDS.map((k) => <th key={k} style={{ textAlign: "right" }}>{COSTFIELD_LABELS[k]}</th>)}
+                    <th style={{ textAlign: "right" }}>Gesamt</th>
+                    <th>Status</th><th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tourenList.length === 0 && (
+                    <tr><td colSpan={16} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>
+                      {tourenMonat !== "ALLE" ? "Keine Touren in diesem Monat." : "Noch keine Touren erfasst."}
+                    </td></tr>
+                  )}
+                  {tourenList.map((t) => {
+                    const sc = statusColors(t.status);
+                    return (
+                      <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer", background: sc.bg }} title="Doppelklick zum Bearbeiten">
+                        <td className="mono">{formatDateDMY(t.datum)}</td>
+                        <td className="mono">{isoWeek(t.datum) ?? "–"}</td>
+                        <td className="mono">{t.lkw}</td>
+                        <td>{t.fahrer}</td>
+                        <td>{t.kunde}</td>
+                        <td className="mono">{t.auftragsNr}</td>
+                        {COSTFIELDS.map((k) => (
+                          <td key={k} className="mono" style={{ textAlign: "right" }}>{euro(t[k])}</td>
+                        ))}
+                        <td className="mono" style={{ textAlign: "right" }}>{euro(gesamt(t))}</td>
+                        <td>
+                          <span style={{ color: sc.text, fontSize: 12, fontWeight: 700 }}>
+                            {t.status}
+                          </span>
+                        </td>
+                        <td>
+                          <button className="ghost" onClick={() => openEdit(t)} style={{ padding: "4px 8px" }}>
+                            <Pencil size={13} />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              </div>
             </div>
           </div>
         )}
@@ -1267,29 +1369,55 @@ export default function TourenApp() {
               Offene und reklamierte Touren, sortiert nach Datum. Sobald eine Tour auf "Abgerechnet" gesetzt wird
               (über Suche → Bearbeiten), verschwindet sie automatisch aus dieser Liste.
             </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14, marginBottom: 20 }}>
+              {[
+                { label: "Offen", stat: reklamationStats.offen },
+                { label: "Reklamiert", stat: reklamationStats.reklamiert },
+              ].map((k) => (
+                <div key={k.label} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
+                  <div style={{ background: MARINE, color: AMBER, fontSize: 11, fontWeight: 600, padding: "8px 14px" }}>
+                    {k.label.toUpperCase()}
+                  </div>
+                  <div style={{ padding: "14px 14px", display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+                    <span className="mono" style={{ fontSize: 22, fontWeight: 600, color: MARINE }}>
+                      {k.stat.anzahl} {k.stat.anzahl === 1 ? "Tour" : "Touren"}
+                    </span>
+                    <span className="mono" style={{ fontSize: 14, fontWeight: 500, color: TEXT_MUTED }}>{euro(k.stat.summe)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
             <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
               <div style={{ overflowX: "auto" }}>
               <table>
                 <thead>
                   <tr>
-                    <th>Datum</th><th>LKW</th><th>Fahrer</th><th>Kunde</th>
-                    <th>Auftrags-Nr.</th><th style={{ textAlign: "right" }}>Gesamt</th>
+                    <th>Datum</th><th>KW</th><th>LKW</th><th>Fahrer</th><th>Kunde</th>
+                    <th>Auftrags-Nr.</th>
+                    {COSTFIELDS.map((k) => <th key={k} style={{ textAlign: "right" }}>{COSTFIELD_LABELS[k]}</th>)}
+                    <th style={{ textAlign: "right" }}>Gesamt</th>
                     <th>Status</th><th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {reklamationTours.length === 0 && (
-                    <tr><td colSpan={8} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>Keine offenen oder reklamierten Touren.</td></tr>
+                    <tr><td colSpan={16} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>Keine offenen oder reklamierten Touren.</td></tr>
                   )}
                   {reklamationTours.map((t) => {
                     const sc = statusColors(t.status);
                     return (
                       <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer", background: sc.bg }} title="Doppelklick zum Bearbeiten">
                         <td className="mono">{formatDateDMY(t.datum)}</td>
+                        <td className="mono">{isoWeek(t.datum) ?? "–"}</td>
                         <td className="mono">{t.lkw}</td>
                         <td>{t.fahrer}</td>
                         <td>{t.kunde}</td>
                         <td className="mono">{t.auftragsNr}</td>
+                        {COSTFIELDS.map((k) => (
+                          <td key={k} className="mono" style={{ textAlign: "right" }}>{euro(t[k])}</td>
+                        ))}
                         <td className="mono" style={{ textAlign: "right" }}>{euro(gesamt(t))}</td>
                         <td>
                           <span style={{ color: sc.text, fontSize: 12, fontWeight: 700 }}>
@@ -1345,7 +1473,7 @@ export default function TourenApp() {
               <div>
                 <label>Container-Nr. *</label>
                 <input value={form.containerNr} style={fieldStyle("containerNr", formErrors)}
-                  onChange={(e) => { setForm({ ...form, containerNr: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "containerNr")); }} />
+                  onChange={(e) => { setForm({ ...form, containerNr: e.target.value.toUpperCase() }); setFormErrors(formErrors.filter((k) => k !== "containerNr")); }} />
               </div>
               <div>
                 <label>Kunde / Ladestelle *</label>
@@ -1375,28 +1503,32 @@ export default function TourenApp() {
               <div>
                 <label>Abrechnungs-KM *</label>
                 <input type="number" value={form.km} style={fieldStyle("km", formErrors)}
-                  onChange={(e) => { setForm({ ...form, km: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "km")); }} />
-              </div>
-              <div>
-                <label>Status *</label>
-                <select value={form.status} style={fieldStyle("status", formErrors)}
-                  onChange={(e) => { setForm({ ...form, status: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "status")); }}>
-                  <option value="">Bitte wählen …</option>
-                  <option>Offen</option><option>Reklamiert</option><option>Abgerechnet</option>
-                </select>
+                  onChange={(e) => {
+                    const km = e.target.value;
+                    const fracht = calcFracht(km);
+                    const diesel = calcDiesel(km, form.datum);
+                    setForm({ ...form, km, ...(fracht !== "" ? { fracht } : {}), ...(diesel !== "" ? { diesel } : {}) });
+                    setFormErrors(formErrors.filter((k) => k !== "km"));
+                  }} />
               </div>
 
               {[
-                ["fracht", "Fracht (€)", avgFracht],
+                ["fracht", "Fracht (€)", "automatisch aus Staffelrate"],
                 ["fd", "FD (€)", null],
                 ["adr", "ADR (€)", null],
                 ["multistop", "Multistop (€)", null],
                 ["wartezeit", "Wartezeit (€)", null],
-                ["maut", "Maut (€)", avgMaut],
-                ["diesel", "Diesel (€)", avgDiesel],
-              ].map(([key, lbl, avg]) => (
+                ["maut", "Maut (€)", null],
+                ["diesel", "Diesel (€)", "automatisch aus Diesel-Index"],
+              ].map(([key, lbl, hint]) => (
                 <div key={key}>
-                  <label>{lbl} {avg != null && <span style={{ color: TEXT_MUTED }}>· Ø {euro0(avg)}</span>}</label>
+                  <label>
+                    {lbl}
+                    {hint && <span style={{ color: TEXT_MUTED }}> · {hint}</span>}
+                    {key === "maut" && lastTour && lastTour.maut !== undefined && lastTour.maut !== "" && (
+                      <span style={{ color: TEXT_MUTED }}> · Vorschlag: {euro(lastTour.maut)}</span>
+                    )}
+                  </label>
                   <input type="number" value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} />
                 </div>
               ))}
@@ -1404,6 +1536,15 @@ export default function TourenApp() {
               <div style={{ gridColumn: "1 / -1" }}>
                 <label>Bemerkungen</label>
                 <textarea rows={2} value={form.bemerkungen} onChange={(e) => setForm({ ...form, bemerkungen: e.target.value })} />
+              </div>
+
+              <div style={{ gridColumn: "1 / -1" }}>
+                <label>Status *</label>
+                <select value={form.status} style={statusFieldStyle(form.status, formErrors)}
+                  onChange={(e) => { setForm({ ...form, status: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "status")); }}>
+                  <option value="">Bitte wählen …</option>
+                  <option>Offen</option><option>Reklamiert</option><option>Abgerechnet</option>
+                </select>
               </div>
             </div>
 
@@ -1535,17 +1676,25 @@ export default function TourenApp() {
                   </select>
                 </div>
               </div>
+              <button className="ghost" style={{ marginTop: 10 }}
+                onClick={() => setSearch({ nr: "", containerNr: "", kunde: "", plz: "", ort: "", lkw: "", status: "" })}>
+                Filter zurücksetzen
+              </button>
             </div>
 
             <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
               <div style={{ overflowX: "auto" }}>
               <table>
                 <thead>
-                  <tr><th>Datum</th><th>LKW</th><th>Kunde</th><th>Container-Nr.</th><th>PLZ</th><th>Ort</th><th style={{ textAlign: "right" }}>Gesamt</th><th>Status</th><th></th></tr>
+                  <tr>
+                    <th>Datum</th><th>KW</th><th>LKW</th><th>Kunde</th><th>Container-Nr.</th><th>PLZ</th><th>Ort</th>
+                    {COSTFIELDS.map((k) => <th key={k} style={{ textAlign: "right" }}>{COSTFIELD_LABELS[k]}</th>)}
+                    <th style={{ textAlign: "right" }}>Gesamt</th><th>Status</th><th></th>
+                  </tr>
                 </thead>
                 <tbody>
                   {searchResults.length === 0 && (
-                    <tr><td colSpan={9} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>
+                    <tr><td colSpan={17} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>
                       {Object.values(search).some(Boolean) ? "Keine Treffer." : "Mindestens ein Suchfeld ausfüllen."}
                     </td></tr>
                   )}
@@ -1554,14 +1703,35 @@ export default function TourenApp() {
                     return (
                       <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer", background: sc.bg }} title="Doppelklick zum Bearbeiten">
                         <td className="mono">{formatDateDMY(t.datum)}</td>
+                        <td className="mono">{isoWeek(t.datum) ?? "–"}</td>
                         <td className="mono">{t.lkw}</td>
                         <td>{t.kunde}</td>
                         <td className="mono">{t.containerNr}</td>
                         <td className="mono">{t.plz}</td>
                         <td>{t.ort}</td>
+                        {COSTFIELDS.map((k) => (
+                          <td key={k} className="mono" style={{ textAlign: "right" }}>{euro(t[k])}</td>
+                        ))}
                         <td className="mono" style={{ textAlign: "right" }}>{euro(gesamt(t))}</td>
                         <td><span style={{ color: sc.text, fontSize: 12, fontWeight: 700 }}>{t.status}</span></td>
-                        <td><button className="ghost" onClick={() => openEdit(t)} style={{ padding: "4px 8px" }}><Pencil size={13} /></button></td>
+                        <td>
+                          <div style={{ display: "flex", gap: 4 }}>
+                            <button className="ghost" onClick={() => openEdit(t)} style={{ padding: "4px 8px" }} title="Bearbeiten">
+                              <Pencil size={13} />
+                            </button>
+                            {quickStatusId === t.id ? (
+                              <select autoFocus value={t.status} style={{ width: 130 }}
+                                onChange={(e) => quickChangeStatus(t.id, e.target.value)}
+                                onBlur={() => setQuickStatusId(null)}>
+                                <option>Offen</option><option>Reklamiert</option><option>Abgerechnet</option>
+                              </select>
+                            ) : (
+                              <button className="ghost" onClick={() => setQuickStatusId(t.id)} style={{ padding: "4px 8px" }} title="Status ändern">
+                                <RefreshCw size={13} />
+                              </button>
+                            )}
+                          </div>
+                        </td>
                       </tr>
                     );
                   })}
@@ -1788,16 +1958,23 @@ export default function TourenApp() {
                             jede Block-Tabelle ihre Spaltenbreiten unabhängig vom Inhalt - lange Werte
                             (z. B. Kunde "Gadot Germany") verschieben dann die Spalten eines Blocks
                             gegenüber den anderen Blöcken ("Spalten verrutscht" zwischen den LKW-Blöcken). */}
-                        <table style={{ minWidth: 720, tableLayout: "fixed", width: "100%" }}>
+                        <table style={{ minWidth: 1300, tableLayout: "fixed", width: "100%" }}>
                           <colgroup>
-                            <col style={{ width: "11%" }} />
+                            <col style={{ width: "7%" }} />
+                            <col style={{ width: "8%" }} />
                             <col style={{ width: "13%" }} />
-                            <col style={{ width: "20%" }} />
-                            <col style={{ width: "15%" }} />
-                            <col style={{ width: "10%" }} />
-                            <col style={{ width: "10%" }} />
-                            <col style={{ width: "11%" }} />
-                            <col style={{ width: "10%" }} />
+                            <col style={{ width: "9%" }} />
+                            <col style={{ width: "5%" }} />
+                            <col style={{ width: "5%" }} />
+                            <col style={{ width: "6%" }} />
+                            <col style={{ width: "5%" }} />
+                            <col style={{ width: "5%" }} />
+                            <col style={{ width: "6%" }} />
+                            <col style={{ width: "6%" }} />
+                            <col style={{ width: "5%" }} />
+                            <col style={{ width: "5%" }} />
+                            <col style={{ width: "7%" }} />
+                            <col style={{ width: "8%" }} />
                           </colgroup>
                           <thead>
                             <tr>
@@ -1807,6 +1984,9 @@ export default function TourenApp() {
                               <th style={ellipsisCell}>Auftrags-Nr.</th>
                               <th style={{ whiteSpace: "nowrap" }}>Ankunft</th>
                               <th style={{ whiteSpace: "nowrap" }}>Abfahrt</th>
+                              {COSTFIELDS.map((k) => (
+                                <th key={k} style={{ textAlign: "right", whiteSpace: "nowrap" }}>{COSTFIELD_LABELS[k]}</th>
+                              ))}
                               <th style={{ textAlign: "right", whiteSpace: "nowrap" }}>Gesamt</th>
                               <th style={{ whiteSpace: "nowrap" }}>Status</th>
                             </tr>
@@ -1822,6 +2002,9 @@ export default function TourenApp() {
                                   <td className="mono ellipsis" style={ellipsisCell} title={t.auftragsNr}>{t.auftragsNr}</td>
                                   <td className="mono" style={{ whiteSpace: "nowrap" }}>{t.ankunft}</td>
                                   <td className="mono" style={{ whiteSpace: "nowrap" }}>{t.abfahrt}</td>
+                                  {COSTFIELDS.map((k) => (
+                                    <td key={k} className="mono" style={{ textAlign: "right", whiteSpace: "nowrap" }}>{euro(t[k])}</td>
+                                  ))}
                                   <td className="mono" style={{ textAlign: "right", whiteSpace: "nowrap" }}>{euro(gesamt(t))}</td>
                                   <td style={{ whiteSpace: "nowrap" }}>
                                     <span style={{ color: sc.text, fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>
@@ -2091,7 +2274,12 @@ export default function TourenApp() {
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <div><label>Datum *</label>
                 <input type="date" value={editForm.datum} style={fieldStyle("datum", editErrors)}
-                  onChange={(e) => { setEditForm({ ...editForm, datum: e.target.value }); setEditErrors(editErrors.filter((k) => k !== "datum")); }} />
+                  onChange={(e) => {
+                    const datum = e.target.value;
+                    const diesel = calcDiesel(editForm.km, datum);
+                    setEditForm({ ...editForm, datum, ...(diesel !== "" ? { diesel } : {}) });
+                    setEditErrors(editErrors.filter((k) => k !== "datum"));
+                  }} />
               </div>
               <div><label>LKW *</label>
                 <select value={editForm.lkw} style={fieldStyle("lkw", editErrors)}
@@ -2113,7 +2301,7 @@ export default function TourenApp() {
               </div>
               <div><label>Container-Nr. *</label>
                 <input value={editForm.containerNr} style={fieldStyle("containerNr", editErrors)}
-                  onChange={(e) => { setEditForm({ ...editForm, containerNr: e.target.value }); setEditErrors(editErrors.filter((k) => k !== "containerNr")); }} />
+                  onChange={(e) => { setEditForm({ ...editForm, containerNr: e.target.value.toUpperCase() }); setEditErrors(editErrors.filter((k) => k !== "containerNr")); }} />
               </div>
               <div><label>Kunde *</label>
                 <input value={editForm.kunde} style={fieldStyle("kunde", editErrors)}
@@ -2137,19 +2325,32 @@ export default function TourenApp() {
               </div>
               <div><label>Abrechnungs-KM *</label>
                 <input type="number" value={editForm.km} style={fieldStyle("km", editErrors)}
-                  onChange={(e) => { setEditForm({ ...editForm, km: e.target.value }); setEditErrors(editErrors.filter((k) => k !== "km")); }} />
+                  onChange={(e) => {
+                    const km = e.target.value;
+                    const fracht = calcFracht(km);
+                    const diesel = calcDiesel(km, editForm.datum);
+                    setEditForm({ ...editForm, km, ...(fracht !== "" ? { fracht } : {}), ...(diesel !== "" ? { diesel } : {}) });
+                    setEditErrors(editErrors.filter((k) => k !== "km"));
+                  }} />
               </div>
-              <div><label>Status *</label>
-                <select value={editForm.status} style={fieldStyle("status", editErrors)}
+              {COSTFIELDS.map((k) => (
+                <div key={k}>
+                  <label>
+                    {COSTFIELD_LABELS[k]}
+                    {(k === "fracht" || k === "diesel") && <span style={{ color: TEXT_MUTED }}> · automatisch berechnet</span>}
+                  </label>
+                  <input type="number" value={editForm[k]} onChange={(e) => setEditForm({ ...editForm, [k]: e.target.value })} />
+                </div>
+              ))}
+              <div style={{ gridColumn: "1 / -1" }}><label>Bemerkungen</label><textarea rows={2} value={editForm.bemerkungen} onChange={(e) => setEditForm({ ...editForm, bemerkungen: e.target.value })} /></div>
+              <div style={{ gridColumn: "1 / -1" }}>
+                <label>Status *</label>
+                <select value={editForm.status} style={statusFieldStyle(editForm.status, editErrors)}
                   onChange={(e) => { setEditForm({ ...editForm, status: e.target.value }); setEditErrors(editErrors.filter((k) => k !== "status")); }}>
                   <option value="">Bitte wählen …</option>
                   <option>Offen</option><option>Reklamiert</option><option>Abgerechnet</option>
                 </select>
               </div>
-              {COSTFIELDS.map((k) => (
-                <div key={k}><label>{k}</label><input type="number" value={editForm[k]} onChange={(e) => setEditForm({ ...editForm, [k]: e.target.value })} /></div>
-              ))}
-              <div style={{ gridColumn: "1 / -1" }}><label>Bemerkungen</label><textarea rows={2} value={editForm.bemerkungen} onChange={(e) => setEditForm({ ...editForm, bemerkungen: e.target.value })} /></div>
             </div>
             <div style={{ fontSize: 11, color: TEXT_MUTED, marginTop: 10 }}>* Pflichtfeld</div>
             {confirmDelete && (
