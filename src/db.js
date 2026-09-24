@@ -259,7 +259,9 @@ export async function syncEinsatzplan(next) {
 }
 
 // ------------------------------------------------------------ Diesel-Index --
-const dieselFromDb = (r) => ({ id: r.id, jahr: r.jahr, monat: r.monat, betrag: r.betrag });
+// createdAt wird für die automatische Diesel-Berechnung in App.jsx gebraucht:
+// bei mehreren Einträgen für denselben Monat zählt der zuletzt erfasste.
+const dieselFromDb = (r) => ({ id: r.id, jahr: r.jahr, monat: r.monat, betrag: r.betrag, createdAt: r.created_at });
 
 export async function fetchDieselIndex() {
   const { data, error } = await supabase.from("diesel_index").select("*");
@@ -287,4 +289,3 @@ export async function syncDieselIndex(prev, next) {
   }
   return fetchDieselIndex();
 }
-// deploy-trigger: force Vercel rebuild (13:07 UTC)
