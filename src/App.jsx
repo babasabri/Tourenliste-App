@@ -870,7 +870,18 @@ export default function TourenApp() {
         .filter((t) => t.lkw === f.plate)
         .sort((a, b) => (a.datum || "").localeCompare(b.datum || "") || (a.ankunft || "").localeCompare(b.ankunft || ""));
       const summe = touren.reduce((s, t) => s + gesamt(t), 0);
-      return { plate: f.plate, fahrer, status, touren, summe };
+      // Start-/Ende-KM kommen aus dem Einsatzplan derselben Woche (wie in der
+      // Wochen-KM-Berechnung dort) - Einsatztage/Ø pro Tag beziehen sich
+      // bewusst auf die tatsächlich erfassten Touren dieser Woche (Kalendertage
+      // mit mind. einer Tour), nicht auf die Wochen-KM.
+      const startKm = computeStartKm(epJahr, epKw, f.plate);
+      const endKm = rec && rec.endKm !== undefined && rec.endKm !== "" ? Number(rec.endKm) : null;
+      const wochenKm = startKm !== null && endKm !== null ? endKm - startKm : null;
+      const tage = new Set();
+      touren.forEach((t) => { if (t.datum) tage.add(t.datum); });
+      const einsatztage = tage.size;
+      const proTag = einsatztage ? summe / einsatztage : 0;
+      return { plate: f.plate, fahrer, status, touren, summe, startKm, endKm, wochenKm, einsatztage, proTag };
     });
   }, [tours, fleet, einsatz, epJahr, epKw]);
 
@@ -1934,6 +1945,21 @@ export default function TourenApp() {
                       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                         <span className="mono" style={{ fontSize: 14, fontWeight: 600 }}>{b.plate}</span>
                         <span style={{ fontSize: 12.5, color: TEXT_MUTED }}>{b.fahrer || "– kein Fahrer zugeordnet –"}</span>
+                        <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>
+                          Start-KM <span className="mono" style={{ color: TEXT, fontWeight: 500 }}>{b.startKm !== null ? b.startKm.toLocaleString("de-DE") : "–"}</span>
+                        </span>
+                        <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>
+                          Ende-KM <span className="mono" style={{ color: TEXT, fontWeight: 500 }}>{b.endKm !== null ? b.endKm.toLocaleString("de-DE") : "–"}</span>
+                        </span>
+                        <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>
+                          KM-Woche <span className="mono" style={{ color: TEXT, fontWeight: 500 }}>{b.wochenKm !== null ? b.wochenKm.toLocaleString("de-DE") + " km" : "–"}</span>
+                        </span>
+                        <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>
+                          Einsatztage <span className="mono" style={{ color: TEXT, fontWeight: 500 }}>{b.einsatztage}</span>
+                        </span>
+                        <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>
+                          Ø pro Tag <span className="mono" style={{ color: TEXT, fontWeight: 500 }}>{euro(b.proTag)}</span>
+                        </span>
                         {inactive && (
                           <span style={{ background: "#EDEFF2", color: TEXT_MUTED, fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20 }}>
                             {b.status}
