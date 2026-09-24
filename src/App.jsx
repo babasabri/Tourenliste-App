@@ -6,6 +6,7 @@ import {
 import {
   LayoutDashboard, Truck, PlusCircle, Search as SearchIcon, Users,
   Fuel, X, Save, Trash2, Pencil, AlertTriangle, CalendarClock, Upload, ListChecks, RefreshCw,
+  TrendingUp, MapPin,
 } from "lucide-react";
 import * as db from "./db";
 
@@ -228,11 +229,29 @@ const TERMINALRATEN = [
   { terminal: "Germersheim", betrag: "260,00", note: "nur bei Fremddepot" },
 ];
 
+// Farbige Kopfzeile + Icon-Badge für die reinen Info-/Referenzboxen (Staffelraten,
+// Terminal-Pauschalen, Diesel-Index) - rein optisch, damit diese von den
+// eigentlichen Eingabe-Karten unterscheidbar sind und die Ansicht insgesamt
+// weniger eintönig wirkt.
+function InfoBoxHeader({ icon: Icon, badgeBg, iconColor, title }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+      <div style={{
+        width: 30, height: 30, borderRadius: 8, background: badgeBg, flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}>
+        <Icon size={15} color={iconColor} />
+      </div>
+      <div style={{ fontSize: 13, fontWeight: 600, color: MARINE }}>{title}</div>
+    </div>
+  );
+}
+
 function RatesInfoBox() {
   return (
     <>
-      <div style={{ flex: "1 1 260px", minWidth: 240, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18 }}>
-        <div style={{ fontSize: 13, fontWeight: 600 }}>Staffelraten</div>
+      <div style={{ flex: "1 1 260px", minWidth: 240, background: CARD, border: `1px solid ${BORDER}`, borderTop: `3px solid ${AMBER}`, borderRadius: 12, padding: 18 }}>
+        <InfoBoxHeader icon={TrendingUp} badgeBg={AMBER} iconColor={AMBER_DARK} title="Staffelraten" />
         <div style={{ fontSize: 11, color: TEXT_MUTED, marginBottom: 10 }}>einfache Entfernung gem. Frachtbrief</div>
         <table>
           <thead>
@@ -262,8 +281,8 @@ function RatesInfoBox() {
         </table>
       </div>
 
-      <div style={{ flex: "1 1 260px", minWidth: 240, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Terminal-Pauschalen</div>
+      <div style={{ flex: "1 1 260px", minWidth: 240, background: CARD, border: `1px solid ${BORDER}`, borderTop: `3px solid ${MARINE_LIGHT}`, borderRadius: 12, padding: 18 }}>
+        <InfoBoxHeader icon={MapPin} badgeBg={MARINE_LIGHT} iconColor="#fff" title="Terminal-Pauschalen" />
         <table>
           <thead>
             <tr><th>Terminal</th><th style={{ textAlign: "right" }}>Betrag</th></tr>
@@ -284,6 +303,27 @@ function RatesInfoBox() {
         </table>
       </div>
     </>
+  );
+}
+
+// Farbige Seitenüberschrift je Tab (Icon-Badge in Marine + Titel/Subtitel),
+// passend zum Farbschema der App (Kopfleiste/Amber-Akzent) statt einer
+// reinen Textzeile - macht die einzelnen Ansichten auf den ersten Blick
+// unterscheidbar.
+function PageHeading({ icon: Icon, title, subtitle }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+      <div style={{
+        width: 38, height: 38, borderRadius: 10, background: MARINE, flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}>
+        <Icon size={18} color={AMBER} />
+      </div>
+      <div>
+        <div style={{ fontSize: 18, fontWeight: 700, color: MARINE, letterSpacing: 0.1 }}>{title}</div>
+        {subtitle && <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginTop: 1 }}>{subtitle}</div>}
+      </div>
+    </div>
   );
 }
 
@@ -1141,6 +1181,7 @@ export default function TourenApp() {
       <div style={{ padding: 28 }}>
         {tab === "dashboard" && (
           <div>
+            <PageHeading icon={LayoutDashboard} title="Dashboard" subtitle="Umsatz, Touren und Kennzahlen im Überblick" />
             <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "14px 18px", marginBottom: 20 }}>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 10 }}>
                 <div>
@@ -1313,6 +1354,7 @@ export default function TourenApp() {
 
         {tab === "touren" && (
           <div>
+            <PageHeading icon={Truck} title="Touren" subtitle="Alle erfassten Touren" />
             <div style={{ display: "flex", alignItems: "flex-end", gap: 12, marginBottom: 14 }}>
               <div style={{ width: 160 }}>
                 <label>Monat</label>
@@ -1353,7 +1395,7 @@ export default function TourenApp() {
                         {COSTFIELDS.map((k) => (
                           <td key={k} className="mono" style={{ textAlign: "right" }}>{euro(t[k])}</td>
                         ))}
-                        <td className="mono" style={{ textAlign: "right" }}>{euro(gesamt(t))}</td>
+                        <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>{euro(gesamt(t))}</td>
                         <td>
                           <span style={{ color: sc.text, fontSize: 12, fontWeight: 700 }}>
                             {t.status}
@@ -1376,6 +1418,7 @@ export default function TourenApp() {
 
         {tab === "reklamationen" && (
           <div>
+            <PageHeading icon={AlertTriangle} title="Reklamationen" />
             <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 14 }}>
               Offene und reklamierte Touren, sortiert nach Datum. Sobald eine Tour auf "Abgerechnet" gesetzt wird
               (über Suche → Bearbeiten), verschwindet sie automatisch aus dieser Liste.
@@ -1429,7 +1472,7 @@ export default function TourenApp() {
                         {COSTFIELDS.map((k) => (
                           <td key={k} className="mono" style={{ textAlign: "right" }}>{euro(t[k])}</td>
                         ))}
-                        <td className="mono" style={{ textAlign: "right" }}>{euro(gesamt(t))}</td>
+                        <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>{euro(gesamt(t))}</td>
                         <td>
                           <span style={{ color: sc.text, fontSize: 12, fontWeight: 700 }}>
                             {t.status}
@@ -1451,9 +1494,10 @@ export default function TourenApp() {
         )}
 
         {tab === "neu" && (
+          <div>
+          <PageHeading icon={PlusCircle} title="Neue Tour erfassen" />
           <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap" }}>
           <div style={{ maxWidth: 640, flex: "1 1 480px", background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 24 }}>
-            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 18 }}>Neue Tour erfassen</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
               <div>
                 <label>Datum *</label>
@@ -1574,9 +1618,9 @@ export default function TourenApp() {
           <div style={{ display: "flex", flexWrap: "wrap", gap: 16, flex: "2 1 600px" }}>
             <RatesInfoBox />
 
-            <div style={{ flex: "1 1 260px", minWidth: 240, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18 }}>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>Diesel-Index</div>
-              <div style={{ fontSize: 11, color: TEXT_MUTED, marginBottom: 10 }}>monatlich von Contargo</div>
+            <div style={{ flex: "1 1 260px", minWidth: 240, background: CARD, border: `1px solid ${BORDER}`, borderTop: `3px solid ${SUCCESS}`, borderRadius: 12, padding: 18 }}>
+              <InfoBoxHeader icon={Fuel} badgeBg={SUCCESS} iconColor="#fff" title="Diesel-Index" />
+              <div style={{ fontSize: 11, color: TEXT_MUTED, marginBottom: 10, marginTop: -4 }}>monatlich von Contargo</div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
                 <div>
@@ -1646,10 +1690,12 @@ export default function TourenApp() {
             </div>
           </div>
           </div>
+          </div>
         )}
 
         {tab === "suche" && (
           <div>
+            <PageHeading icon={SearchIcon} title="Suche" />
             <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18, marginBottom: 18 }}>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
                 <div>
@@ -1723,7 +1769,7 @@ export default function TourenApp() {
                         {COSTFIELDS.map((k) => (
                           <td key={k} className="mono" style={{ textAlign: "right" }}>{euro(t[k])}</td>
                         ))}
-                        <td className="mono" style={{ textAlign: "right" }}>{euro(gesamt(t))}</td>
+                        <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>{euro(gesamt(t))}</td>
                         <td><span style={{ color: sc.text, fontSize: 12, fontWeight: 700 }}>{t.status}</span></td>
                         <td>
                           <div style={{ display: "flex", gap: 4 }}>
@@ -1755,6 +1801,7 @@ export default function TourenApp() {
 
         {tab === "einsatz" && (
           <div>
+            <PageHeading icon={CalendarClock} title="Einsatzplan" />
             <div style={{ display: "flex", alignItems: "flex-end", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
               <div>
                 <label>Jahr</label>
@@ -1907,6 +1954,7 @@ export default function TourenApp() {
 
         {tab === "wochenkontrolle" && (
           <div>
+            <PageHeading icon={ListChecks} title="Wochen-Kontrolle" />
             <div style={{ display: "flex", alignItems: "flex-end", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
               <div>
                 <label>Jahr</label>
@@ -2031,7 +2079,7 @@ export default function TourenApp() {
                                   {COSTFIELDS.map((k) => (
                                     <td key={k} className="mono" style={{ textAlign: "right", whiteSpace: "nowrap" }}>{euro(t[k])}</td>
                                   ))}
-                                  <td className="mono" style={{ textAlign: "right", whiteSpace: "nowrap" }}>{euro(gesamt(t))}</td>
+                                  <td className="mono" style={{ textAlign: "right", whiteSpace: "nowrap", fontWeight: 700 }}>{euro(gesamt(t))}</td>
                                   <td style={{ whiteSpace: "nowrap" }}>
                                     <span style={{ color: sc.text, fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>
                                       {t.status}
@@ -2053,6 +2101,7 @@ export default function TourenApp() {
 
         {tab === "import" && (
           <div style={{ maxWidth: 640 }}>
+            <PageHeading icon={Upload} title="Import" />
             <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 24 }}>
               <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>Touren importieren</div>
               <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 16 }}>
@@ -2082,6 +2131,7 @@ export default function TourenApp() {
 
         {tab === "stamm" && (
           <div style={{ maxWidth: 560, display: "flex", flexDirection: "column", gap: 20 }}>
+            <PageHeading icon={Users} title="Stammdaten" />
             <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18 }}>
               <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14 }}>Fuhrpark</div>
               {fleet.map((f, i) => {
