@@ -6,9 +6,13 @@ import {
 import {
   LayoutDashboard, Truck, PlusCircle, Search as SearchIcon, Users,
   Fuel, X, Save, Trash2, Pencil, AlertTriangle, CalendarClock, Upload, ListChecks, RefreshCw,
-  TrendingUp, MapPin,
+  TrendingUp, MapPin, FileDown, FileText, FileSpreadsheet,
 } from "lucide-react";
 import * as db from "./db";
+// Export-Bibliotheken (jsPDF, ExcelJS) sind vergleichsweise groß - werden per
+// dynamic import() erst geladen, wenn der Export-Tab tatsächlich genutzt wird,
+// statt das Hauptbundle für alle Nutzer aufzublähen (siehe handleExportPdf/
+// handleExportExcel weiter unten).
 
 const MARINE = "#0F2A43";
 const MARINE_LIGHT = "#1B4467";
@@ -398,6 +402,12 @@ export default function TourenApp() {
   const [epDraft, setEpDraft] = useState({});
   const [epDirty, setEpDirty] = useState(false);
   const [epSaving, setEpSaving] = useState(false);
+  // Export-Tab: nutzt dieselbe Wochenauswahl (epJahr/epKw) wie Einsatzplan/
+  // Wochen-Kontrolle. Eigene Lade-/Fehlerzustände je Format, da der Excel-
+  // Export asynchron läuft (ExcelJS) und beide unabhängig fehlschlagen können.
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const [exportingExcel, setExportingExcel] = useState(false);
+  const [exportError, setExportError] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -925,6 +935,47 @@ export default function TourenApp() {
     });
   }, [tours, fleet, einsatz, epJahr, epKw]);
 
+  // Export (PDF/Excel) nutzt exakt dieselbe Wochenauswahl und dieselben
+  // vorberechneten LKW-Blöcke wie die Wochen-Kontrolle-Ansicht - was man dort
+  // sieht, ist genau das, was exportiert wird.
+  async function handleExportPdf() {
+    setExportError("");
+    setExportingPdf(true);
+    try {
+      const { exportWochenkontrollePdf } = await import("./export");
+      const monday = isoWeekMonday(epJahr, epKw);
+      const sunday = new Date(monday.getTime() + 6 * 86400000);
+      exportWochenkontrollePdf({
+        jahr: epJahr, kw: epKw,
+        vonLabel: formatDateShort(monday), bisLabel: formatDateShort(sunday),
+        bloecke: wochenBloecke,
+      });
+    } catch (e) {
+      setExportError("PDF-Export fehlgeschlagen: " + e.message);
+    } finally {
+      setExportingPdf(false);
+    }
+  }
+
+  async function handleExportExcel() {
+    setExportError("");
+    setExportingExcel(true);
+    try {
+      const { exportWochenkontrolleExcel } = await import("./export");
+      const monday = isoWeekMonday(epJahr, epKw);
+      const sunday = new Date(monday.getTime() + 6 * 86400000);
+      await exportWochenkontrolleExcel({
+        jahr: epJahr, kw: epKw,
+        vonLabel: formatDateShort(monday), bisLabel: formatDateShort(sunday),
+        bloecke: wochenBloecke,
+      });
+    } catch (e) {
+      setExportError("Excel-Export fehlgeschlagen: " + e.message);
+    } finally {
+      setExportingExcel(false);
+    }
+  }
+
   const dashTours = useMemo(() => {
     // LKW/Fahrer-Filter gelten immer zuerst - unabhängig davon, ob die Tour ein
     // Datum hat. Vorher wurde bei fehlendem Datum sofort "true" zurückgegeben und
@@ -1076,14 +1127,15 @@ export default function TourenApp() {
 
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { id: "touren", label: "Touren", icon: Truck },
-    { id: "reklamationen", label: "Reklamationen", icon: AlertTriangle },
     { id: "neu", label: "Neue Tour", icon: PlusCircle },
-    { id: "suche", label: "Suche", icon: SearchIcon },
-    { id: "einsatz", label: "Einsatzplan", icon: CalendarClock },
     { id: "wochenkontrolle", label: "Wochen-Kontrolle", icon: ListChecks },
+    { id: "touren", label: "Touren", icon: Truck },
+    { id: "suche", label: "Suche", icon: SearchIcon },
+    { id: "reklamationen", label: "Reklamationen", icon: AlertTriangle },
+    { id: "einsatz", label: "Einsatzplan", icon: CalendarClock },
     { id: "stamm", label: "Stammdaten", icon: Users },
     { id: "import", label: "Import", icon: Upload },
+    { id: "export", label: "Export", icon: FileDown },
   ];
 
   if (!loaded) {
@@ -2131,6 +2183,92 @@ export default function TourenApp() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {tab === "export" && (
+          <div style={{ maxWidth: 760 }}>
+            <PageHeading icon={FileDown} title="Export" subtitle="Wochen-Kontrolle als PDF oder Excel herunterladen" />
+
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+              <div>
+                <label>Jahr</label>
+                <input type="number" style={{ width: 100 }} value={epJahr} onChange={(e) => setEpJahr(Number(e.target.value))} />
+              </div>
+              <div>
+                <label>Kalenderwoche</label>
+                <input type="number" min="1" max="53" style={{ width: 100 }} value={epKw} onChange={(e) => setEpKw(Number(e.target.value))} />
+              </div>
+              <button className="ghost" title="Vorherige Woche" onClick={() => shiftWeek(-1)}>◀</button>
+              <button className="ghost" title="Nächste Woche" onClick={() => shiftWeek(1)}>▶</button>
+              <button className="ghost" onClick={() => { setEpJahr(isoWeekYear(today)); setEpKw(isoWeek(today)); }}>
+                Aktuelle Woche
+              </button>
+            </div>
+
+            <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 18 }}>
+              KW {epKw}/{epJahr} ({formatDateShort(isoWeekMonday(epJahr, epKw))} – {formatDateShort(new Date(isoWeekMonday(epJahr, epKw).getTime() + 6 * 86400000))})
+              &nbsp;· exportiert wird genau das, was auch in der Wochen-Kontrolle für diese Woche zu sehen ist.
+            </div>
+
+            <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 18, marginBottom: 18 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>Inhalt dieser Woche</div>
+              {wochenBloecke.every((b) => b.touren.length === 0) && (
+                <div style={{ fontSize: 12.5, color: TEXT_MUTED }}>Für diese Woche sind noch keine Touren erfasst.</div>
+              )}
+              {wochenBloecke.some((b) => b.touren.length > 0) && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {wochenBloecke.map((b) => (
+                    <div key={b.plate} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
+                      <span style={{ width: 12, height: 12, borderRadius: 3, background: lkwBlockColor(b.plate), flexShrink: 0 }} />
+                      <span className="mono" style={{ width: 90, fontWeight: 500 }}>{b.plate}</span>
+                      <span style={{ color: TEXT_MUTED, flex: 1 }}>
+                        {b.touren.length} {b.touren.length === 1 ? "Tour" : "Touren"}
+                      </span>
+                      <span className="mono" style={{ fontWeight: 600 }}>{euro(b.summe)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+              <div style={{ flex: "1 1 280px", background: CARD, border: `1px solid ${BORDER}`, borderTop: `3px solid ${DANGER}`, borderRadius: 12, padding: 18 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                  <div style={{ width: 30, height: 30, borderRadius: 8, background: DANGER, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <FileText size={15} color="#fff" />
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: MARINE }}>PDF-Export</div>
+                </div>
+                <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginBottom: 14 }}>
+                  Druckfertiges Dokument, ein Abschnitt je LKW inkl. aller Touren und Summen.
+                </div>
+                <button className="primary" disabled={exportingPdf} onClick={handleExportPdf} style={exportingPdf ? { opacity: 0.6, cursor: "default" } : undefined}>
+                  <FileDown size={15} /> {exportingPdf ? "Erstelle PDF …" : "Als PDF exportieren"}
+                </button>
+              </div>
+
+              <div style={{ flex: "1 1 280px", background: CARD, border: `1px solid ${BORDER}`, borderTop: `3px solid ${SUCCESS}`, borderRadius: 12, padding: 18 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                  <div style={{ width: 30, height: 30, borderRadius: 8, background: SUCCESS, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <FileSpreadsheet size={15} color="#fff" />
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: MARINE }}>Excel-Export</div>
+                </div>
+                <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginBottom: 14 }}>
+                  Bearbeitbare .xlsx-Datei mit echten Zahlenwerten, ein Arbeitsblatt für die ganze Woche.
+                </div>
+                <button className="primary" disabled={exportingExcel} onClick={handleExportExcel} style={exportingExcel ? { opacity: 0.6, cursor: "default" } : undefined}>
+                  <FileDown size={15} /> {exportingExcel ? "Erstelle Excel-Datei …" : "Als Excel exportieren"}
+                </button>
+              </div>
+            </div>
+
+            {exportError && (
+              <div style={{ marginTop: 14, fontSize: 12.5, color: DANGER, background: DANGER_BG, borderRadius: 8, padding: "10px 14px" }}>
+                {exportError}
+              </div>
+            )}
           </div>
         )}
 
