@@ -220,6 +220,27 @@ export async function syncDrivers(prev, next) {
   return fetchDrivers();
 }
 
+// ---------------------------------------------------------------- Kunden --
+// Nur lesend: die customers-Tabelle wird aktuell über SQL gepflegt (Anlage +
+// Bereinigung von Dubletten/Tippfehlern), die App nutzt sie ausschließlich als
+// Vorschlagsliste fürs Autocomplete im Kunde-Feld (siehe CustomerAutocomplete
+// in App.jsx). default_maut ist ein Erfahrungswert (Durchschnitt bisheriger
+// Touren) zum Vorausfüllen, kein Pflichtwert - der Nutzer kann ihn jederzeit
+// überschreiben.
+const customerFromDb = (r) => ({
+  id: r.id,
+  name: r.name,
+  plz: nullToEmpty(r.plz),
+  ort: nullToEmpty(r.ort),
+  defaultMaut: r.default_maut === null || r.default_maut === undefined ? "" : r.default_maut,
+});
+
+export async function fetchCustomers() {
+  const { data, error } = await supabase.from("customers").select("*").order("name");
+  if (error) throw error;
+  return data.map(customerFromDb);
+}
+
 // -------------------------------------------------------------- Einsatzplan --
 const einsatzToDb = (e) => ({
   jahr: e.jahr,
