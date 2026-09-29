@@ -331,6 +331,60 @@ function PageHeading({ icon: Icon, title, subtitle }) {
   );
 }
 
+// Autocomplete fürs Kunde-Feld (Neue Tour + Tour bearbeiten): filtert die
+// customers-Tabelle client-seitig nach Teilstring (max. 8 Treffer), zeigt
+// PLZ/Ort/Maut-Vorschlag pro Treffer und ruft bei Auswahl onSelect(customer)
+// auf, damit der Aufrufer PLZ/Ort/Maut ins Formular übernehmen kann. Das
+// Textfeld bleibt frei beschreibbar - auch Kunden, die noch nicht in der
+// Tabelle stehen, lassen sich weiterhin eintippen.
+function CustomerAutocomplete({ value, onChange, onSelect, customers, style }) {
+  const [open, setOpen] = useState(false);
+  const [highlighted, setHighlighted] = useState(0);
+
+  const q = (value || "").trim().toLowerCase();
+  const matches = q.length === 0 ? [] : customers.filter((c) => c.name.toLowerCase().includes(q)).slice(0, 8);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={value}
+        style={style}
+        onChange={(e) => { onChange(e.target.value); setOpen(true); setHighlighted(0); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onKeyDown={(e) => {
+          if (!open || matches.length === 0) return;
+          if (e.key === "ArrowDown") { e.preventDefault(); setHighlighted((h) => Math.min(h + 1, matches.length - 1)); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); setHighlighted((h) => Math.max(h - 1, 0)); }
+          else if (e.key === "Enter" && matches[highlighted]) { e.preventDefault(); onSelect(matches[highlighted]); setOpen(false); }
+          else if (e.key === "Escape") { setOpen(false); }
+        }}
+      />
+      {open && matches.length > 0 && (
+        <div style={{
+          position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, background: CARD,
+          border: `1px solid ${BORDER}`, borderRadius: 8, marginTop: 4, maxHeight: 220, overflowY: "auto",
+          boxShadow: "0 4px 14px rgba(0,0,0,0.12)",
+        }}>
+          {matches.map((c, i) => (
+            <div key={c.id} onMouseDown={() => { onSelect(c); setOpen(false); }}
+              style={{
+                padding: "8px 12px", fontSize: 12.5, cursor: "pointer",
+                background: i === highlighted ? BG : "transparent",
+                borderBottom: i < matches.length - 1 ? `1px solid ${BORDER}` : "none",
+              }}>
+              <div style={{ fontWeight: 500 }}>{c.name}</div>
+              <div style={{ fontSize: 11, color: TEXT_MUTED }}>
+                {c.plz} {c.ort}{c.defaultMaut !== "" && c.defaultMaut !== null ? ` · Maut-Vorschlag ${euro(c.defaultMaut)}` : ""}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function gesamt(t) {
   return COSTFIELDS.reduce((sum, k) => sum + (Number(t[k]) || 0), 0);
 }
@@ -382,6 +436,7 @@ export default function TourenApp() {
   const [newMiete, setNewMiete] = useState(false);
   const [confirmDeleteFleet, setConfirmDeleteFleet] = useState(null);
   const [drivers, setDrivers] = useState([]);
+  const [customers, setCustomers] = useState([]);
   const [newDriverName, setNewDriverName] = useState("");
   const [confirmDeleteDriver, setConfirmDeleteDriver] = useState(null);
   const [storageError, setStorageError] = useState("");
@@ -412,16 +467,18 @@ export default function TourenApp() {
   useEffect(() => {
     (async () => {
       try {
-        const [t, f, ep, di, dr] = await Promise.all([
+        const [t, f, ep, di, dr, cu] = await Promise.all([
           db.fetchTours(),
           db.fetchFleet(),
           db.fetchEinsatzplan(),
           db.fetchDieselIndex(),
           db.fetchDrivers(),
+          db.fetchCustomers(),
         ]);
         setTours(t);
         setEinsatz(ep);
         setDieselIndex(di);
+        setCustomers(cu);
 
         // Fuhrpark/Fahrer: wenn in der Datenbank noch nichts steht, mit den
         // vorgegebenen Stammdaten vorbefüllen (statt leer zu starten) - genau
@@ -1589,8 +1646,20 @@ export default function TourenApp() {
               </div>
               <div>
                 <label>Kunde / Ladestelle *</label>
-                <input value={form.kunde} style={fieldStyle("kunde", formErrors)}
-                  onChange={(e) => { setForm({ ...form, kunde: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "kunde")); }} />
+                <CustomerAutocomplete
+                  customers={customers}
+                  value={form.kunde}
+                  style={fieldStyle("kunde", formErrors)}
+                  onChange={(v) => { setForm({ ...form, kunde: v }); setFormErrors(formErrors.filter((k) => k !== "kunde")); }}
+                  onSelect={(c) => {
+                    setForm({
+                      ...form, kunde: c.name,
+                      plz: c.plz || form.plz, ort: c.ort || form.ort,
+                      ...(c.defaultMaut !== "" && c.defaultMaut !== null ? { maut: c.defaultMaut } : {}),
+                    });
+                    setFormErrors(formErrors.filter((k) => !["kunde", "plz", "ort"].includes(k)));
+                  }}
+                />
               </div>
               <div>
                 <label>PLZ * {lastTour && <span style={{ color: TEXT_MUTED }}>· Vorschlag: {lastTour.plz}</span>}</label>
@@ -2524,8 +2593,20 @@ export default function TourenApp() {
                   onChange={(e) => { setEditForm({ ...editForm, containerNr: e.target.value.toUpperCase() }); setEditErrors(editErrors.filter((k) => k !== "containerNr")); }} />
               </div>
               <div><label>Kunde *</label>
-                <input value={editForm.kunde} style={fieldStyle("kunde", editErrors)}
-                  onChange={(e) => { setEditForm({ ...editForm, kunde: e.target.value }); setEditErrors(editErrors.filter((k) => k !== "kunde")); }} />
+                <CustomerAutocomplete
+                  customers={customers}
+                  value={editForm.kunde}
+                  style={fieldStyle("kunde", editErrors)}
+                  onChange={(v) => { setEditForm({ ...editForm, kunde: v }); setEditErrors(editErrors.filter((k) => k !== "kunde")); }}
+                  onSelect={(c) => {
+                    setEditForm({
+                      ...editForm, kunde: c.name,
+                      plz: c.plz || editForm.plz, ort: c.ort || editForm.ort,
+                      ...(c.defaultMaut !== "" && c.defaultMaut !== null ? { maut: c.defaultMaut } : {}),
+                    });
+                    setEditErrors(editErrors.filter((k) => !["kunde", "plz", "ort"].includes(k)));
+                  }}
+                />
               </div>
               <div><label>PLZ *</label>
                 <input value={editForm.plz} style={fieldStyle("plz", editErrors)}
