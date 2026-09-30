@@ -241,6 +241,36 @@ export async function fetchCustomers() {
   return data.map(customerFromDb);
 }
 
+// --------------------------------------------------------- Frachtbrief-Import --
+// Ruft die Supabase Edge Function "extract-frachtbrief" auf, die den
+// hochgeladenen Frachtbrief (PDF/Foto, base64) serverseitig per Anthropic-API
+// ausliest und strukturierte Tour-Felder zurückgibt (siehe supabase/functions/
+// extract-frachtbrief/index.ts). Wirft bei jedem Fehler (Netzwerk, Server,
+// Anthropic-API) eine Error mit einer für den Nutzer verständlichen Meldung -
+// App.jsx zeigt sie direkt im "Neue Tour"-Formular an. Die zurückgegebenen
+// Werte sind ein Vorschlag, kein Ersatz für die Prüfung durch den Disponenten.
+export async function extractFrachtbrief(fileBase64, mediaType) {
+  const { data, error } = await supabase.functions.invoke("extract-frachtbrief", {
+    body: { fileBase64, mediaType },
+  });
+  if (error) {
+    // supabase-js liefert bei einem Fehlerstatus meist nur eine generische
+    // Meldung ("Edge Function returned a non-2xx status code") - die
+    // eigentliche, für den Nutzer verständliche Meldung unserer Function
+    // steckt im Response-Body, den wir hier zusätzlich auszulesen versuchen.
+    let message = error.message || "Frachtbrief konnte nicht ausgelesen werden.";
+    try {
+      const body = await error.context.json();
+      if (body && body.error) message = body.error;
+    } catch {
+      // Antwort war kein JSON (z. B. Netzwerk-/Verbindungsfehler) - Standardmeldung behalten.
+    }
+    throw new Error(message);
+  }
+  if (data && data.error) throw new Error(data.error);
+  return data.data;
+}
+
 // -------------------------------------------------------------- Einsatzplan --
 const einsatzToDb = (e) => ({
   jahr: e.jahr,
