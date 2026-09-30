@@ -6,7 +6,7 @@ import {
 import {
   LayoutDashboard, Truck, PlusCircle, Search as SearchIcon, Users,
   Fuel, X, Save, Trash2, Pencil, AlertTriangle, CalendarClock, Upload, ListChecks, RefreshCw,
-  TrendingUp, MapPin, FileDown, FileText, FileSpreadsheet, FileScan, Loader2,
+  TrendingUp, MapPin, FileDown, FileText, FileSpreadsheet, FileScan, Loader2, Menu,
 } from "lucide-react";
 import * as db from "./db";
 // Export-Bibliotheken (jsPDF, ExcelJS) sind vergleichsweise groß - werden per
@@ -440,6 +440,9 @@ export default function TourenApp() {
   const [einsatz, setEinsatz] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("dashboard");
+  // Mobile: Seitenleiste ist per Default eingeklappt (offscreen) und wird über
+  // den Hamburger-Button in der mobilen Kopfleiste ein-/ausgeblendet.
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
   // Frachtbrief-Import (nur "Neue Tour"): fbLoading während des Auslesens,
   // fbError bei Fehlern, fbInfo = { filled: string[], unsure: Set<string>,
@@ -1364,7 +1367,7 @@ export default function TourenApp() {
   }
 
   return (
-    <div style={{ fontFamily: "'Space Grotesk', sans-serif", background: BG, minHeight: "100vh", color: TEXT, display: "flex" }}>
+    <div className="app-shell" style={{ fontFamily: "'Space Grotesk', sans-serif", background: BG, minHeight: "100vh", color: TEXT, display: "flex" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
         .mono { font-family: 'IBM Plex Mono', monospace; }
@@ -1400,11 +1403,43 @@ export default function TourenApp() {
           display: inline-flex; align-items: center; gap: 6px;
         }
         button.ghost:hover { border-color: ${MARINE}; }
+
+        /* --- Mobile (Smartphone): Seitenleiste wird zum ausklappbaren Menü,
+           Formular-Grid wird einspaltig, Inhalte bekommen weniger Padding. --- */
+        .mobile-topbar { display: none; }
+        .mobile-backdrop { display: none; }
+        @media (max-width: 820px) {
+          .app-shell { display: block !important; }
+          .sidebar {
+            position: fixed !important; top: 0; left: 0; z-index: 50;
+            transform: translateX(-100%);
+            transition: transform 0.2s ease;
+            box-shadow: 4px 0 18px rgba(0,0,0,0.25);
+          }
+          .sidebar.open { transform: translateX(0); }
+          .main-content { width: 100%; }
+          .content-padding { padding: 16px !important; }
+          .mobile-topbar {
+            display: flex !important; align-items: center; gap: 12px;
+            padding: 12px 16px; background: ${MARINE}; position: sticky; top: 0; z-index: 20;
+          }
+          .mobile-backdrop {
+            display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 40;
+          }
+          .neue-tour-grid { grid-template-columns: 1fr !important; }
+          .neue-tour-card { max-width: 100% !important; flex-basis: 100% !important; }
+        }
       `}</style>
 
+      {mobileNavOpen && (
+        <div className="mobile-backdrop" onClick={() => setMobileNavOpen(false)} />
+      )}
+
       {/* Hauptnavigation als linke Seitenleiste (statt oben) - auf Nutzerwunsch,
-          moderneres Layout. Bleibt beim Scrollen des Inhalts stehen (sticky). */}
-      <div style={{
+          moderneres Layout. Bleibt beim Scrollen des Inhalts stehen (sticky).
+          Auf schmalen Bildschirmen (Smartphone) wird sie stattdessen per
+          Hamburger-Button ein-/ausgeblendet (siehe .sidebar-Regeln oben). */}
+      <div className={"sidebar" + (mobileNavOpen ? " open" : "")} style={{
         width: 226, flexShrink: 0, background: MARINE, display: "flex", flexDirection: "column",
         padding: "22px 0", position: "sticky", top: 0, alignSelf: "flex-start", height: "100vh", overflowY: "auto",
       }}>
@@ -1420,7 +1455,7 @@ export default function TourenApp() {
             return (
               <button
                 key={t.id}
-                onClick={() => setTab(t.id)}
+                onClick={() => { setTab(t.id); setMobileNavOpen(false); }}
                 style={{
                   background: active ? "rgba(255,255,255,0.09)" : "none",
                   border: "none", cursor: "pointer", width: "100%", textAlign: "left",
@@ -1437,7 +1472,17 @@ export default function TourenApp() {
         </nav>
       </div>
 
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div className="main-content" style={{ flex: 1, minWidth: 0 }}>
+        <div className="mobile-topbar">
+          <button
+            onClick={() => setMobileNavOpen(true)}
+            aria-label="Menü öffnen"
+            style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", display: "flex", padding: 4 }}
+          >
+            <Menu size={22} />
+          </button>
+          <span style={{ color: "#fff", fontSize: 15, fontWeight: 600 }}>Tourenliste</span>
+        </div>
         {storageError && (
           <div style={{
             background: DANGER_BG, color: DANGER, fontSize: 12.5, fontWeight: 500,
@@ -1452,7 +1497,7 @@ export default function TourenApp() {
           </div>
         )}
 
-        <div style={{ padding: 28 }}>
+        <div className="content-padding" style={{ padding: 28 }}>
         {tab === "dashboard" && (
           <div>
             <PageHeading icon={LayoutDashboard} title="Dashboard" subtitle="Umsatz, Touren und Kennzahlen im Überblick" />
@@ -1771,7 +1816,7 @@ export default function TourenApp() {
           <div>
           <PageHeading icon={PlusCircle} title="Neue Tour erfassen" />
           <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap" }}>
-          <div style={{ maxWidth: 640, flex: "1 1 480px", background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 24 }}>
+          <div className="neue-tour-card" style={{ maxWidth: 640, flex: "1 1 480px", background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 24 }}>
             <div style={{ marginBottom: 18, padding: 14, background: fbInfo ? WARN_BG : BG, border: `1px dashed ${BORDER}`, borderRadius: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: fbLoading ? "default" : "pointer", padding: "7px 12px", border: `1px solid ${BORDER}`, borderRadius: 8, background: CARD, fontSize: 13, fontWeight: 500, opacity: fbLoading ? 0.6 : 1 }}>
@@ -1799,7 +1844,7 @@ export default function TourenApp() {
                 </div>
               )}
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <div className="neue-tour-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
               <div>
                 <label>Datum *</label>
                 <input type="date" value={form.datum} style={fbFieldStyle("datum", fbInfo, formErrors)}
