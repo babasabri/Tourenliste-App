@@ -180,6 +180,114 @@ function matchFleetPlate(raw, fleet) {
   return fleet.find((f) => norm(f.plate) === target) || null;
 }
 
+// Wandelt eine von der KI erkannte Uhrzeit in das von <input type="time">
+// zwingend benötigte Format HH:MM (24h, mit führender Null) um. Ohne exaktes
+// Format zeigt der Browser den Wert im Zeitfeld gar nicht an - wirkt dann so,
+// als hätte die Erkennung die Uhrzeit übersehen, obwohl sie nur nicht ins
+// erwartete Format passte (z. B. "8:30" statt "08:30", oder "8.30 Uhr").
+function parseFrachtbriefZeit(raw) {
+  if (!raw) return "";
+  const cleaned = String(raw).trim().toLowerCase().replace(/uhr/g, "").trim();
+  let h, min;
+  let m = cleaned.match(/^(\d{1,2})[:.,\s](\d{2})$/);
+  if (m) {
+    h = Number(m[1]);
+    min = Number(m[2]);
+  } else {
+    m = cleaned.match(/^(\d{3,4})$/);
+    if (m) {
+      const digits = m[1].padStart(4, "0");
+      h = Number(digits.slice(0, 2));
+      min = Number(digits.slice(2));
+    }
+  }
+  if (h === undefined || Number.isNaN(h) || Number.isNaN(min) || h > 23 || min > 59) return "";
+  return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+}
+
+// Bringt eine Container-Nummer ins im Team übliche Format XXXX999999-9 (4
+// Buchstaben + 6 Ziffern + Prüfziffer nach Bindestrich, z. B. "HAMU123446-7")
+// - erkennt das Muster unabhängig davon, ob im erkannten/getippten Text
+// Leerzeichen, Punkte oder Bindestriche stehen. Passt das Muster nicht (z. B.
+// unvollständig erkannt), wird nur großgeschrieben statt geraten.
+function normalizeContainerNr(raw) {
+  if (!raw) return raw;
+  const compact = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const m = compact.match(/^([A-Z]{4})(\d{6})(\d)$/);
+  if (m) return `${m[1]}${m[2]}-${m[3]}`;
+  return String(raw).toUpperCase();
+}
+
+// Sicherheitsnetz für den Frachtbrief-Import: schneidet gängige
+// Rechtsform-Zusätze ab, falls die KI trotz Anweisung im Tool-Schema den
+// vollen Firmennamen liefert ("Pollmeier Recycling GmbH & Co. KG" statt nur
+// "Pollmeier") - im Team wird durchgängig der kurze, gängige Name erfasst.
+function shortenKundeName(raw) {
+  if (!raw) return raw;
+  let s = String(raw).trim();
+  const suffixes = [
+    /\s*gmbh\s*&\s*co\.?\s*kg\.?$/i,
+    /\s*mbh\s*&\s*co\.?\s*kg\.?$/i,
+    /\s*&\s*co\.?\s*kg\.?$/i,
+    /\s*gmbh\.?$/i,
+    /\s*mbh\.?$/i,
+    /\s*kg\.?$/i,
+    /\s*ohg\.?$/i,
+    /\s*e\.?\s*k\.?$/i,
+    /\s*ag\.?$/i,
+    /\s*se\.?$/i,
+  ];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const re of suffixes) {
+      const stripped = s.replace(re, "").trim();
+      if (stripped && stripped !== s) {
+        s = stripped;
+        changed = true;
+      }
+    }
+  }
+  return s;
+}
+
+// Manche Kunden haben mehrere Standorte unter demselben kurzen Namen, aber
+// deutlich unterschiedlicher Entfernung (z. B. "Pollmeier" in Aschaffenburg
+// und in Creuzburg). Beim Frachtbrief-Import kommt der Kundenname meist
+// zuverlässig durch, PLZ/Ort dagegen manchmal gar nicht oder unsicher. Wenn
+// die erfassten km eindeutig zu einem der aus der Touren-Historie bekannten
+// Standorte passen, wird dessen PLZ/Ort übernommen statt der (ggf. falschen
+// oder fehlenden) KI-Erkennung. Liefert null, wenn der Kunde nur einen
+// bekannten Standort hat (keine Mehrdeutigkeit) oder gar keine Historie.
+function findCustomerLocationByKm(kundeName, km, tours) {
+  if (!kundeName || !km) return null;
+  const target = String(kundeName).trim().toLowerCase();
+  const kmNum = Number(km);
+  if (!target || !kmNum || Number.isNaN(kmNum)) return null;
+
+  const groups = new Map();
+  for (const t of tours) {
+    if ((t.kunde || "").trim().toLowerCase() !== target) continue;
+    if (!t.km) continue;
+    const key = `${t.plz || ""}|${t.ort || ""}`;
+    if (!groups.has(key)) groups.set(key, { plz: t.plz || "", ort: t.ort || "", kms: [] });
+    groups.get(key).kms.push(Number(t.km));
+  }
+  if (groups.size <= 1) return null;
+
+  let best = null;
+  let bestDiff = Infinity;
+  for (const g of groups.values()) {
+    const avgKm = g.kms.reduce((a, b) => a + b, 0) / g.kms.length;
+    const diff = Math.abs(avgKm - kmNum);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = { plz: g.plz, ort: g.ort, avgKm };
+    }
+  }
+  return best;
+}
+
 // Feld-Style für "Neue Tour": Pflichtfeld-Fehler (rot) geht vor unsicher von
 // der KI erkannten Feldern (dunkles Amber) geht vor einfach nur automatisch
 // aus dem Frachtbrief übernommenen Feldern (helles Amber) - so bleibt auf
@@ -778,9 +886,17 @@ export default function TourenApp() {
     return v && v.startKm !== undefined && v.startKm !== "" ? Number(v.startKm) : null;
   }
 
-  function lastTourFor(kunde) {
+  // plz/ort optional: grenzt bei mehrdeutigen Kunden (mehrere Standorte unter
+  // demselben Namen) auf einen bestimmten Standort ein, wenn es dafür
+  // Treffer gibt - sonst (z. B. Standort unbekannt) bleibt die Suche wie
+  // bisher über den Kundennamen allein.
+  function lastTourFor(kunde, plz, ort) {
     if (!kunde) return null;
-    const matches = tours.filter((t) => (t.kunde || "").toLowerCase() === kunde.toLowerCase());
+    let matches = tours.filter((t) => (t.kunde || "").toLowerCase() === kunde.toLowerCase());
+    if (plz || ort) {
+      const narrowed = matches.filter((t) => (!plz || t.plz === plz) && (!ort || t.ort === ort));
+      if (narrowed.length > 0) matches = narrowed;
+    }
     if (!matches.length) return null;
     return matches.reduce((a, b) => (a.datum > b.datum ? a : b));
   }
@@ -906,18 +1022,50 @@ export default function TourenApp() {
     }
 
     setField("auftragsNr", extracted.auftragsNr);
-    if (extracted.containerNr) setField("containerNr", extracted.containerNr.toUpperCase());
-    setField("kunde", extracted.kunde);
-    setField("plz", extracted.plz);
-    setField("ort", extracted.ort);
-    setField("ankunft", extracted.ankunft);
-    setField("abfahrt", extracted.abfahrt);
+    if (extracted.containerNr) setField("containerNr", normalizeContainerNr(extracted.containerNr));
+
+    const kundeKurz = shortenKundeName(extracted.kunde);
+    setField("kunde", kundeKurz);
+
+    // Bei Kunden mit mehreren bekannten Standorten (z. B. "Pollmeier") anhand
+    // der erfassten km den passenden Standort wählen, statt der ggf. falschen
+    // oder fehlenden PLZ/Ort-Erkennung zu vertrauen.
+    let locationNote = null;
+    const locMatch = findCustomerLocationByKm(kundeKurz, extracted.km, tours);
+    if (locMatch) {
+      setField("plz", locMatch.plz);
+      setField("ort", locMatch.ort);
+      unsure.add("plz");
+      unsure.add("ort");
+      locationNote = `Mehrere Standorte für "${kundeKurz}" bekannt - anhand der km automatisch "${locMatch.ort}" gewählt (bisher ⌀ ${Math.round(locMatch.avgKm)} km).`;
+    } else {
+      setField("plz", extracted.plz);
+      setField("ort", extracted.ort);
+    }
+
+    const ankunft = parseFrachtbriefZeit(extracted.ankunft);
+    if (ankunft) setField("ankunft", ankunft);
+    else if (extracted.ankunft) unsure.add("ankunft");
+    const abfahrt = parseFrachtbriefZeit(extracted.abfahrt);
+    if (abfahrt) setField("abfahrt", abfahrt);
+    else if (extracted.abfahrt) unsure.add("abfahrt");
+
     if (extracted.km) {
       setField("km", extracted.km);
       const fracht = calcFracht(extracted.km);
       const diesel = calcDiesel(extracted.km, datum || next.datum);
       if (fracht !== "") next.fracht = fracht;
       if (diesel !== "") next.diesel = diesel;
+    }
+
+    // Maut steht auf dem Frachtbrief meist nicht lesbar/gar nicht drauf -
+    // deshalb wie im manuellen Formular aus der letzten Tour desselben
+    // Kunden/Standorts übernehmen, hier aber direkt einfügen statt nur als
+    // Vorschlagstext anzuzeigen (amber markiert, da eine Schätzung).
+    const mautTour = lastTourFor(kundeKurz, next.plz, next.ort);
+    if (mautTour && mautTour.maut !== undefined && mautTour.maut !== "") {
+      setField("maut", mautTour.maut);
+      unsure.add("maut");
     }
 
     let timeWarn = null;
@@ -927,7 +1075,7 @@ export default function TourenApp() {
 
     setForm(next);
     setFormErrors(formErrors.filter((k) => !filled.includes(k)));
-    setFbInfo({ filled, unsure, lkwWarn, timeWarn });
+    setFbInfo({ filled, unsure, lkwWarn, timeWarn, locationNote });
   }
 
   async function handleFrachtbriefUpload(e) {
@@ -970,6 +1118,17 @@ export default function TourenApp() {
     setFbError("");
     setSaveNote("Tour gespeichert.");
     setTimeout(() => setSaveNote(""), 2500);
+  }
+
+  // Setzt das "Neue Tour"-Formular zurück, ohne zu speichern (z. B. nach
+  // einem versehentlichen Frachtbrief-Upload oder falscher Eingabe).
+  function handleCancelNewTour() {
+    setForm(emptyForm);
+    setFormErrors([]);
+    setDupWarning(null);
+    setFbInfo(null);
+    setFbError("");
+    setSaveNote("");
   }
 
   function handleSave() {
@@ -1840,6 +1999,7 @@ export default function TourenApp() {
                     <div style={{ marginTop: 4 }}>KI unsicher bei: {[...fbInfo.unsure].join(", ")}</div>
                   )}
                   {fbInfo.lkwWarn && <div style={{ marginTop: 4 }}>{fbInfo.lkwWarn}</div>}
+                  {fbInfo.locationNote && <div style={{ marginTop: 4 }}>{fbInfo.locationNote}</div>}
                   {fbInfo.timeWarn && <div style={{ marginTop: 4 }}>{fbInfo.timeWarn}</div>}
                 </div>
               )}
@@ -1874,7 +2034,8 @@ export default function TourenApp() {
               <div>
                 <label>Container-Nr. *</label>
                 <input value={form.containerNr} style={fbFieldStyle("containerNr", fbInfo, formErrors)}
-                  onChange={(e) => { setForm({ ...form, containerNr: e.target.value.toUpperCase() }); setFormErrors(formErrors.filter((k) => k !== "containerNr")); clearFbFlag("containerNr"); }} />
+                  onChange={(e) => { setForm({ ...form, containerNr: e.target.value.toUpperCase() }); setFormErrors(formErrors.filter((k) => k !== "containerNr")); clearFbFlag("containerNr"); }}
+                  onBlur={() => setForm({ ...form, containerNr: normalizeContainerNr(form.containerNr) })} />
               </div>
               <div>
                 <label>Kunde / Ladestelle *</label>
@@ -1970,6 +2131,7 @@ export default function TourenApp() {
 
             <div style={{ marginTop: 18, display: "flex", alignItems: "center", gap: 14 }}>
               <button className="primary" onClick={handleSave}><Save size={15} /> Tour speichern</button>
+              <button type="button" className="ghost" onClick={handleCancelNewTour}><X size={15} /> Abbrechen</button>
               {saveNote && <span style={{ fontSize: 12.5, color: formErrors.length > 0 ? DANGER : SUCCESS }}>{saveNote}</span>}
             </div>
             <div style={{ fontSize: 11, color: TEXT_MUTED, marginTop: 10 }}>* Pflichtfeld</div>
@@ -2824,7 +2986,8 @@ export default function TourenApp() {
               </div>
               <div><label>Container-Nr. *</label>
                 <input value={editForm.containerNr} style={fieldStyle("containerNr", editErrors)}
-                  onChange={(e) => { setEditForm({ ...editForm, containerNr: e.target.value.toUpperCase() }); setEditErrors(editErrors.filter((k) => k !== "containerNr")); }} />
+                  onChange={(e) => { setEditForm({ ...editForm, containerNr: e.target.value.toUpperCase() }); setEditErrors(editErrors.filter((k) => k !== "containerNr")); }}
+                  onBlur={() => setEditForm({ ...editForm, containerNr: normalizeContainerNr(editForm.containerNr) })} />
               </div>
               <div><label>Kunde *</label>
                 <CustomerAutocomplete
