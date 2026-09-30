@@ -251,6 +251,36 @@ function shortenKundeName(raw) {
   return s;
 }
 
+// Zuverlässiger als reines Suffix-Abschneiden: bildet einen (ggf. noch
+// langen) erkannten Kundennamen auf den im Team tatsächlich verwendeten
+// Kurznamen aus den Stammdaten (customers) ab, z.B. "Pollmeier Recycling
+// Handels GmbH" -> "Pollmeier", sofern "Pollmeier" als Kunde bekannt ist -
+// auch wenn der lange Name keinen der in shortenKundeName bekannten
+// Rechtsform-Zusätze trägt. Bevorzugt bei mehreren passenden Präfixen den
+// längsten (spezifischsten) Treffer. Liefert null, wenn kein bekannter
+// Kunde als Präfix passt (z.B. wirklich neuer Kunde).
+function matchKnownCustomerName(raw, customers) {
+  if (!raw) return null;
+  const target = String(raw).trim().toLowerCase();
+  if (!target) return null;
+  let best = null;
+  for (const c of customers) {
+    const name = (c.name || "").trim();
+    const nameLower = name.toLowerCase();
+    if (!nameLower) continue;
+    if (target === nameLower) return c.name;
+    if (target.startsWith(nameLower)) {
+      const next = target[nameLower.length];
+      // Nur bei Wortgrenze übernehmen, damit z.B. "Merck" nicht fälschlich
+      // in "Merckle" matcht.
+      if (next === undefined || /[^a-zäöüß0-9]/i.test(next)) {
+        if (!best || name.length > best.length) best = name;
+      }
+    }
+  }
+  return best;
+}
+
 // Manche Kunden haben mehrere Standorte unter demselben kurzen Namen, aber
 // deutlich unterschiedlicher Entfernung (z. B. "Pollmeier" in Aschaffenburg
 // und in Creuzburg). Beim Frachtbrief-Import kommt der Kundenname meist
@@ -1024,7 +1054,11 @@ export default function TourenApp() {
     setField("auftragsNr", extracted.auftragsNr);
     if (extracted.containerNr) setField("containerNr", normalizeContainerNr(extracted.containerNr));
 
-    const kundeKurz = shortenKundeName(extracted.kunde);
+    // Zuerst gegen die bekannten Kunden abgleichen (trifft den im Team
+    // tatsächlich verwendeten Namen zuverlässiger als reines Abschneiden von
+    // Rechtsform-Zusätzen) - erst wenn kein bekannter Kunde als Präfix passt,
+    // auf die Suffix-Heuristik zurückfallen (z.B. bei neuen Kunden).
+    const kundeKurz = matchKnownCustomerName(extracted.kunde, customers) || shortenKundeName(extracted.kunde);
     setField("kunde", kundeKurz);
 
     // Bei Kunden mit mehreren bekannten Standorten (z. B. "Pollmeier") anhand
