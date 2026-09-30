@@ -67,17 +67,26 @@ const EXTRACTION_TOOL = {
           "Dokument (z.B. bei Tausch beim Kunden). Immer nur die oben rechts gedruckte " +
           "Nummer verwenden, niemals eine zusätzliche/zweite Nummer.",
       },
-      kunde: { type: "string", description: "Name des Kunden bzw. der Ladestelle." },
+      kunde: {
+        type: "string",
+        description:
+          "Name des Kunden bzw. der Ladestelle - NUR der kurze, gängige Name " +
+          "(z.B. \"Pollmeier\"), OHNE Rechtsform-Zusätze wie GmbH, GmbH & Co. KG, " +
+          "AG, KG, e.K., auch wenn diese auf dem Dokument mit abgedruckt sind.",
+      },
       plz: { type: "string", description: "Postleitzahl der Ladestelle/des Kunden." },
       ort: { type: "string", description: "Ort der Ladestelle/des Kunden." },
       ankunft: {
         type: "string",
-        description: "Ankunftszeit beim Kunden, Format HH:MM (24h). Häufig handschriftlich ergänzt.",
+        description:
+          "Ankunftszeit beim Kunden, Format HH:MM (24h, mit führender Null, z.B. \"08:30\" " +
+          "statt \"8:30\", ohne den Zusatz \"Uhr\"). Häufig handschriftlich ergänzt.",
       },
       abfahrt: {
         type: "string",
         description:
-          "Abfahrtszeit beim Kunden, Format HH:MM (24h). Häufig handschriftlich und nicht " +
+          "Abfahrtszeit beim Kunden, Format HH:MM (24h, mit führender Null, z.B. \"08:30\" " +
+          "statt \"8:30\", ohne den Zusatz \"Uhr\"). Häufig handschriftlich und nicht " +
           "immer auf der dafür vorgesehenen Zeile - steht mitunter freihändig in der Nähe " +
           "der Unterschrift/des Unterschriftsfelds. Dort gezielt mitsuchen.",
       },
