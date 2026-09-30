@@ -50,11 +50,12 @@ function LoginGate({ children }) {
     return (
       <div style={{
         minHeight: "100vh", background: BG, display: "flex", alignItems: "center",
-        justifyContent: "center", fontFamily: "'Space Grotesk', sans-serif",
+        justifyContent: "center", fontFamily: "'Space Grotesk', sans-serif", padding: 16,
+        boxSizing: "border-box",
       }}>
         <form onSubmit={handleLogin} style={{
           background: "#fff", border: `1px solid ${BORDER}`, borderRadius: 12,
-          padding: 32, width: 320,
+          padding: 32, width: "100%", maxWidth: 320, boxSizing: "border-box",
         }}>
           <div style={{ color: MARINE, fontSize: 18, fontWeight: 600, marginBottom: 4 }}>Tourenliste</div>
           <div style={{ color: TEXT_MUTED, fontSize: 12.5, marginBottom: 20 }}>Gemeinsamer Team-Zugang</div>
