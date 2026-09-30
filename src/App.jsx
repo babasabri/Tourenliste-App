@@ -6,7 +6,7 @@ import {
 import {
   LayoutDashboard, Truck, PlusCircle, Search as SearchIcon, Users,
   Fuel, X, Save, Trash2, Pencil, AlertTriangle, CalendarClock, Upload, ListChecks, RefreshCw,
-  TrendingUp, MapPin, FileDown, FileText, FileSpreadsheet,
+  TrendingUp, MapPin, FileDown, FileText, FileSpreadsheet, FileScan, Loader2,
 } from "lucide-react";
 import * as db from "./db";
 // Export-Bibliotheken (jsPDF, ExcelJS) sind vergleichsweise groß - werden per
@@ -154,6 +154,41 @@ function statusFieldStyle(status, errors) {
     return { background: sc.bg, color: sc.text, fontWeight: 700, borderColor: sc.text };
   }
   return fieldStyle("status", errors);
+}
+
+// ---------------------------------------------------- Frachtbrief-Import --
+// Wandelt ein von der KI erkanntes deutsches Datum (TT.MM.JJJJ, ggf. mit "-"
+// oder "/" statt ".") ins HTML-date-Format (YYYY-MM-DD) um. Liefert "" bei
+// nicht erkennbarem Format, statt zu raten.
+function parseFrachtbriefDatum(raw) {
+  if (!raw) return "";
+  const m = String(raw).trim().match(/^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})$/);
+  if (!m) return "";
+  const [, t, mo, j] = m;
+  return `${j}-${mo.padStart(2, "0")}-${t.padStart(2, "0")}`;
+}
+
+// Vergleicht ein von der KI erkanntes Kennzeichen mit den Stammdaten (fleet) -
+// Leerzeichen/Bindestriche werden ignoriert und Groß-/Kleinschreibung
+// vereinheitlicht, damit z. B. "OF-RY500" als "OF RY 500" erkannt wird. Liefert
+// null, wenn kein Fahrzeug aus den Stammdaten passt (bewusst kein Rätselraten -
+// der Disponent wählt dann manuell aus).
+function matchFleetPlate(raw, fleet) {
+  if (!raw) return null;
+  const norm = (s) => String(s).toUpperCase().replace(/[\s-]/g, "");
+  const target = norm(raw);
+  return fleet.find((f) => norm(f.plate) === target) || null;
+}
+
+// Feld-Style für "Neue Tour": Pflichtfeld-Fehler (rot) geht vor unsicher von
+// der KI erkannten Feldern (dunkles Amber) geht vor einfach nur automatisch
+// aus dem Frachtbrief übernommenen Feldern (helles Amber) - so bleibt auf
+// einen Blick erkennbar, was besonders genau geprüft werden sollte.
+function fbFieldStyle(key, fbInfo, errors) {
+  if (errors.includes(key)) return { borderColor: DANGER, background: DANGER_BG };
+  if (fbInfo && fbInfo.unsure.has(key)) return { borderColor: AMBER_DARK, background: WARN_BG };
+  if (fbInfo && fbInfo.filled.includes(key)) return { borderColor: AMBER, background: "#FFFBF2" };
+  return undefined;
 }
 
 // Preisreferenz für "Neue Tour" (Infobox rechts). Reine Anzeige/Hilfe - wird
@@ -406,6 +441,13 @@ export default function TourenApp() {
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("dashboard");
   const [form, setForm] = useState(emptyForm);
+  // Frachtbrief-Import (nur "Neue Tour"): fbLoading während des Auslesens,
+  // fbError bei Fehlern, fbInfo = { filled: string[], unsure: Set<string>,
+  // lkwWarn, timeWarn } solange zuletzt übernommene Werte noch nicht
+  // bestätigt/gespeichert wurden (steuert die Amber-Markierung der Felder).
+  const [fbLoading, setFbLoading] = useState(false);
+  const [fbError, setFbError] = useState("");
+  const [fbInfo, setFbInfo] = useState(null);
   const [editId, setEditId] = useState(null);
   const [editForm, setEditForm] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -798,6 +840,122 @@ export default function TourenApp() {
     });
   }
 
+  // --------------------------------------------------- Frachtbrief-Import --
+  // Löscht die Amber-Markierung für genau ein Feld, sobald der Disponent es
+  // manuell bearbeitet (bestätigt/korrigiert) - die Warnhinweise (Kennzeichen
+  // nicht gefunden / Ankunft-Abfahrt) bleiben davon unberührt, bis der Hinweis
+  // insgesamt ausgeblendet oder die Tour gespeichert wird.
+  function clearFbFlag(key) {
+    setFbInfo((info) => {
+      if (!info) return info;
+      const filled = info.filled.filter((k) => k !== key);
+      const unsure = new Set(info.unsure);
+      unsure.delete(key);
+      return { ...info, filled, unsure };
+    });
+  }
+
+  // Liest eine Datei als base64 (ohne den "data:...;base64," Präfix) - Basis
+  // für die Übergabe an die Edge Function, die keinen Data-URL-Präfix erwartet.
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result;
+        const idx = result.indexOf(",");
+        resolve(idx >= 0 ? result.slice(idx + 1) : result);
+      };
+      reader.onerror = () => reject(new Error("Datei konnte nicht gelesen werden."));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // Überträgt die von der KI erkannten Werte ins "Neue Tour"-Formular. Nur
+  // tatsächlich erkannte (nicht-leere) Felder werden übernommen, damit ein
+  // bereits von Hand eingetragener Wert nicht versehentlich geleert wird.
+  // Kennzeichen wird gegen die Stammdaten geprüft (siehe matchFleetPlate) -
+  // ohne Treffer bleibt das LKW-Feld unverändert und es gibt eine Warnung
+  // statt eines geratenen Werts.
+  function applyFrachtbriefData(extracted) {
+    const unsure = new Set(extracted.unsichereFelder || []);
+    const filled = [];
+    const next = { ...form };
+
+    const setField = (key, value) => {
+      if (value === undefined || value === null || value === "") return;
+      next[key] = value;
+      filled.push(key);
+    };
+
+    const datum = parseFrachtbriefDatum(extracted.datum);
+    if (datum) setField("datum", datum);
+
+    let lkwWarn = null;
+    if (extracted.lkw) {
+      const match = matchFleetPlate(extracted.lkw, fleet);
+      if (match) {
+        setField("lkw", match.plate);
+        const fahrer = driverForWeek(match.plate, datum || next.datum);
+        if (fahrer) setField("fahrer", fahrer);
+      } else {
+        lkwWarn = `Kennzeichen "${extracted.lkw}" wurde nicht in den Stammdaten gefunden - bitte LKW manuell auswählen.`;
+      }
+    }
+
+    setField("auftragsNr", extracted.auftragsNr);
+    if (extracted.containerNr) setField("containerNr", extracted.containerNr.toUpperCase());
+    setField("kunde", extracted.kunde);
+    setField("plz", extracted.plz);
+    setField("ort", extracted.ort);
+    setField("ankunft", extracted.ankunft);
+    setField("abfahrt", extracted.abfahrt);
+    if (extracted.km) {
+      setField("km", extracted.km);
+      const fracht = calcFracht(extracted.km);
+      const diesel = calcDiesel(extracted.km, datum || next.datum);
+      if (fracht !== "") next.fracht = fracht;
+      if (diesel !== "") next.diesel = diesel;
+    }
+
+    let timeWarn = null;
+    if (next.ankunft && next.abfahrt && next.ankunft >= next.abfahrt) {
+      timeWarn = "Ankunft liegt nicht vor Abfahrt - bitte Uhrzeiten prüfen.";
+    }
+
+    setForm(next);
+    setFormErrors(formErrors.filter((k) => !filled.includes(k)));
+    setFbInfo({ filled, unsure, lkwWarn, timeWarn });
+  }
+
+  async function handleFrachtbriefUpload(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ""; // erlaubt erneuten Upload derselben/einer gleichnamigen Datei
+    if (!file) return;
+
+    const ALLOWED_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      setFbError("Nicht unterstütztes Dateiformat. Bitte PDF oder Foto (JPEG/PNG/HEIC) hochladen.");
+      return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      setFbError("Datei ist zu groß (max. 15 MB).");
+      return;
+    }
+
+    setFbLoading(true);
+    setFbError("");
+    setFbInfo(null);
+    try {
+      const fileBase64 = await fileToBase64(file);
+      const extracted = await db.extractFrachtbrief(fileBase64, file.type);
+      applyFrachtbriefData(extracted);
+    } catch (err) {
+      setFbError(err.message || "Frachtbrief konnte nicht ausgelesen werden.");
+    } finally {
+      setFbLoading(false);
+    }
+  }
+
   function doSaveTour() {
     // Status kommt jetzt aus dem Formular (Pflichtfeld) statt fest auf "Offen".
     const rec = { ...form, id: uid() };
@@ -805,6 +963,8 @@ export default function TourenApp() {
     setForm(emptyForm);
     setFormErrors([]);
     setDupWarning(null);
+    setFbInfo(null);
+    setFbError("");
     setSaveNote("Tour gespeichert.");
     setTimeout(() => setSaveNote(""), 2500);
   }
@@ -1612,45 +1772,72 @@ export default function TourenApp() {
           <PageHeading icon={PlusCircle} title="Neue Tour erfassen" />
           <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap" }}>
           <div style={{ maxWidth: 640, flex: "1 1 480px", background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 24 }}>
+            <div style={{ marginBottom: 18, padding: 14, background: fbInfo ? WARN_BG : BG, border: `1px dashed ${BORDER}`, borderRadius: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: fbLoading ? "default" : "pointer", padding: "7px 12px", border: `1px solid ${BORDER}`, borderRadius: 8, background: CARD, fontSize: 13, fontWeight: 500, opacity: fbLoading ? 0.6 : 1 }}>
+                  {fbLoading ? <Loader2 size={14} /> : <FileScan size={14} />}
+                  {fbLoading ? "Wird ausgelesen …" : "Frachtbrief hochladen"}
+                  <input type="file" accept="application/pdf,image/jpeg,image/png,image/webp,image/heic,image/heif"
+                    style={{ display: "none" }} onChange={handleFrachtbriefUpload} disabled={fbLoading} />
+                </label>
+                <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>PDF oder Foto - füllt das Formular automatisch aus</span>
+                {fbInfo && (
+                  <button type="button" className="ghost" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => setFbInfo(null)}>
+                    <X size={12} /> Hinweis ausblenden
+                  </button>
+                )}
+              </div>
+              {fbError && <div style={{ marginTop: 10, fontSize: 12.5, color: DANGER }}>{fbError}</div>}
+              {fbInfo && (
+                <div style={{ marginTop: 10, fontSize: 12.5, color: AMBER_DARK }}>
+                  <div>Daten aus Frachtbrief übernommen - bitte alle amber markierten Felder prüfen, bevor du speicherst.</div>
+                  {fbInfo.unsure.size > 0 && (
+                    <div style={{ marginTop: 4 }}>KI unsicher bei: {[...fbInfo.unsure].join(", ")}</div>
+                  )}
+                  {fbInfo.lkwWarn && <div style={{ marginTop: 4 }}>{fbInfo.lkwWarn}</div>}
+                  {fbInfo.timeWarn && <div style={{ marginTop: 4 }}>{fbInfo.timeWarn}</div>}
+                </div>
+              )}
+            </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
               <div>
                 <label>Datum *</label>
-                <input type="date" value={form.datum} style={fieldStyle("datum", formErrors)}
-                  onChange={(e) => { handleDatumChange(e.target.value, setForm, form); setFormErrors(formErrors.filter((k) => k !== "datum")); }} />
+                <input type="date" value={form.datum} style={fbFieldStyle("datum", fbInfo, formErrors)}
+                  onChange={(e) => { handleDatumChange(e.target.value, setForm, form); setFormErrors(formErrors.filter((k) => k !== "datum")); clearFbFlag("datum"); }} />
               </div>
               <div>
                 <label>LKW *</label>
-                <select value={form.lkw} style={fieldStyle("lkw", formErrors)}
-                  onChange={(e) => { handlePlateChange(e.target.value, setForm, form); setFormErrors(formErrors.filter((k) => k !== "lkw")); }}>
+                <select value={form.lkw} style={fbFieldStyle("lkw", fbInfo, formErrors)}
+                  onChange={(e) => { handlePlateChange(e.target.value, setForm, form); setFormErrors(formErrors.filter((k) => k !== "lkw")); clearFbFlag("lkw"); }}>
                   <option value="">Auswählen …</option>
                   {fleet.map((f) => <option key={f.plate} value={f.plate}>{f.plate}</option>)}
                 </select>
               </div>
               <div>
                 <label>Fahrer * {suggestedFahrer && <span style={{ color: TEXT_MUTED }}>· aus Einsatzplan übernommen</span>}</label>
-                <select value={form.fahrer} style={fieldStyle("fahrer", formErrors)}
-                  onChange={(e) => { setForm({ ...form, fahrer: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "fahrer")); }}>
+                <select value={form.fahrer} style={fbFieldStyle("fahrer", fbInfo, formErrors)}
+                  onChange={(e) => { setForm({ ...form, fahrer: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "fahrer")); clearFbFlag("fahrer"); }}>
                   <option value="">Bitte wählen …</option>
                   {driverOptions.map((name) => <option key={name} value={name}>{name}</option>)}
                 </select>
               </div>
               <div>
                 <label>Auftrags-Nr. *</label>
-                <input value={form.auftragsNr} style={fieldStyle("auftragsNr", formErrors)}
-                  onChange={(e) => { setForm({ ...form, auftragsNr: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "auftragsNr")); }} />
+                <input value={form.auftragsNr} style={fbFieldStyle("auftragsNr", fbInfo, formErrors)}
+                  onChange={(e) => { setForm({ ...form, auftragsNr: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "auftragsNr")); clearFbFlag("auftragsNr"); }} />
               </div>
               <div>
                 <label>Container-Nr. *</label>
-                <input value={form.containerNr} style={fieldStyle("containerNr", formErrors)}
-                  onChange={(e) => { setForm({ ...form, containerNr: e.target.value.toUpperCase() }); setFormErrors(formErrors.filter((k) => k !== "containerNr")); }} />
+                <input value={form.containerNr} style={fbFieldStyle("containerNr", fbInfo, formErrors)}
+                  onChange={(e) => { setForm({ ...form, containerNr: e.target.value.toUpperCase() }); setFormErrors(formErrors.filter((k) => k !== "containerNr")); clearFbFlag("containerNr"); }} />
               </div>
               <div>
                 <label>Kunde / Ladestelle *</label>
                 <CustomerAutocomplete
                   customers={customers}
                   value={form.kunde}
-                  style={fieldStyle("kunde", formErrors)}
-                  onChange={(v) => { setForm({ ...form, kunde: v }); setFormErrors(formErrors.filter((k) => k !== "kunde")); }}
+                  style={fbFieldStyle("kunde", fbInfo, formErrors)}
+                  onChange={(v) => { setForm({ ...form, kunde: v }); setFormErrors(formErrors.filter((k) => k !== "kunde")); clearFbFlag("kunde"); }}
                   onSelect={(c) => {
                     setForm({
                       ...form, kunde: c.name,
@@ -1658,38 +1845,40 @@ export default function TourenApp() {
                       ...(c.defaultMaut !== "" && c.defaultMaut !== null ? { maut: c.defaultMaut } : {}),
                     });
                     setFormErrors(formErrors.filter((k) => !["kunde", "plz", "ort"].includes(k)));
+                    clearFbFlag("kunde"); clearFbFlag("plz"); clearFbFlag("ort");
                   }}
                 />
               </div>
               <div>
                 <label>PLZ * {lastTour && <span style={{ color: TEXT_MUTED }}>· Vorschlag: {lastTour.plz}</span>}</label>
-                <input value={form.plz} style={fieldStyle("plz", formErrors)}
-                  onChange={(e) => { setForm({ ...form, plz: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "plz")); }} />
+                <input value={form.plz} style={fbFieldStyle("plz", fbInfo, formErrors)}
+                  onChange={(e) => { setForm({ ...form, plz: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "plz")); clearFbFlag("plz"); }} />
               </div>
               <div>
                 <label>Ort * {lastTour && <span style={{ color: TEXT_MUTED }}>· Vorschlag: {lastTour.ort}</span>}</label>
-                <input value={form.ort} style={fieldStyle("ort", formErrors)}
-                  onChange={(e) => { setForm({ ...form, ort: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "ort")); }} />
+                <input value={form.ort} style={fbFieldStyle("ort", fbInfo, formErrors)}
+                  onChange={(e) => { setForm({ ...form, ort: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "ort")); clearFbFlag("ort"); }} />
               </div>
               <div>
                 <label>Ankunft *</label>
-                <input type="time" value={form.ankunft} style={fieldStyle("ankunft", formErrors)}
-                  onChange={(e) => { setForm({ ...form, ankunft: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "ankunft")); }} />
+                <input type="time" value={form.ankunft} style={fbFieldStyle("ankunft", fbInfo, formErrors)}
+                  onChange={(e) => { setForm({ ...form, ankunft: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "ankunft")); clearFbFlag("ankunft"); }} />
               </div>
               <div>
                 <label>Abfahrt *</label>
-                <input type="time" value={form.abfahrt} style={fieldStyle("abfahrt", formErrors)}
-                  onChange={(e) => { setForm({ ...form, abfahrt: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "abfahrt")); }} />
+                <input type="time" value={form.abfahrt} style={fbFieldStyle("abfahrt", fbInfo, formErrors)}
+                  onChange={(e) => { setForm({ ...form, abfahrt: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "abfahrt")); clearFbFlag("abfahrt"); }} />
               </div>
               <div>
                 <label>Abrechnungs-KM *</label>
-                <input type="number" value={form.km} style={fieldStyle("km", formErrors)}
+                <input type="number" value={form.km} style={fbFieldStyle("km", fbInfo, formErrors)}
                   onChange={(e) => {
                     const km = e.target.value;
                     const fracht = calcFracht(km);
                     const diesel = calcDiesel(km, form.datum);
                     setForm({ ...form, km, ...(fracht !== "" ? { fracht } : {}), ...(diesel !== "" ? { diesel } : {}) });
                     setFormErrors(formErrors.filter((k) => k !== "km"));
+                    clearFbFlag("km");
                   }} />
               </div>
 
