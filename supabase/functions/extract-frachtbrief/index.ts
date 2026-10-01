@@ -12,7 +12,14 @@
 // gemeldet, damit die UI sie hervorheben kann.
 //
 // Erwarteter Request-Body (POST, JSON):
-//   { "fileBase64": "<base64>", "mediaType": "application/pdf" | "image/jpeg" | "image/png" | "image/webp" | "image/heic" | "image/heif" }
+//   { "fileBase64": "<base64>", "mediaType": "application/pdf" | "image/jpeg" | "image/png" | "image/webp" | "image/heic" | "image/heif",
+//     "knownPlates": ["OF-RY 800", ...] }
+//
+// knownPlates (optional): die aktuellen Kennzeichen aus den Fuhrpark-Stammdaten.
+// Werden mitgeschickt, damit das handschriftliche Kennzeichen gegen die
+// tatsächlich existierenden LKW abgeglichen werden kann, statt es rein aus
+// der (oft schwer leserlichen) Handschrift zu erraten - bei einem kleinen,
+// festen Fuhrpark deutlich zuverlässiger als freie OCR.
 //
 // Antwort bei Erfolg:
 //   { "data": { datum, lkw, auftragsNr, containerNr, kunde, plz, ort, ankunft, abfahrt, km, unsichereFelder } }
@@ -67,10 +74,16 @@ const EXTRACTION_TOOL = {
         type: "string",
         description:
           "Kfz-Kennzeichen der Zugmaschine (LKW). WICHTIG: Auf diesem Dokumenttyp gibt es KEIN " +
-          "Feld, das \"Kennzeichen\" heißt - das Kennzeichen steht handschriftlich oben im " +
-          "Kopfbereich des Dokuments, meist direkt neben oder unter der Zeile " +
-          "\"Auftraggeber:\"/\"ORIGINAL\" (typisches Format: zwei Buchstaben, Bindestrich " +
-          "oder Leerzeichen, dann Buchstaben und Zahlen, z.B. \"OF-RY 800\", \"B-CY 3552\"). " +
+          "Feld, das \"Kennzeichen\" heißt. Der Fahrer schreibt es handschriftlich irgendwo in " +
+          "den Kopfbereich des Dokuments - meistens auf oder neben die Zeile " +
+          "\"Auftraggeber:\"/\"ORIGINAL\", manchmal aber auch an anderer Stelle ganz oben auf " +
+          "der Seite. Suche also den GESAMTEN oberen Bereich des Dokuments gründlich nach " +
+          "einer handschriftlichen Eintragung im Format eines deutschen Kfz-Kennzeichens ab " +
+          "(1-3 Buchstaben, Bindestrich oder Leerzeichen, 1-2 Buchstaben, Leerzeichen, 1-4 " +
+          "Ziffern, z.B. \"OF-RY 800\", \"B-CY 3552\"). Falls eine Liste bekannter Kennzeichen " +
+          "mitgegeben wurde, prüfe gezielt, ob die handschriftliche Eintragung zu einem davon " +
+          "passt, auch wenn die Handschrift auf den ersten Blick uneindeutig ist - ordne ihr " +
+          "im Zweifel das ähnlichste bekannte Kennzeichen zu, statt mit leerem Feld zu melden. " +
           "Nicht verwechseln mit dem Wert im Feld \"CHASSIS:\" weiter unten - das ist eine " +
           "andere, hier nicht benötigte Kennung (z.B. des Anhängers/Chassis) und darf " +
           "NIEMALS als Kennzeichen übernommen werden.",
@@ -163,17 +176,18 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "Texterkennung ist serverseitig nicht konfiguriert." }, 500);
   }
 
-  let body: { fileBase64?: string; mediaType?: string };
+  let body: { fileBase64?: string; mediaType?: string; knownPlates?: string[] };
   try {
     body = await req.json();
   } catch {
     return jsonResponse({ error: "Ungültiger Request (JSON erwartet)." }, 400);
   }
 
-  const { fileBase64, mediaType } = body;
+  const { fileBase64, mediaType, knownPlates } = body;
   if (!fileBase64 || !mediaType) {
     return jsonResponse({ error: "fileBase64 und mediaType sind erforderlich." }, 400);
   }
+  const plateList = Array.isArray(knownPlates) ? knownPlates.filter((p) => typeof p === "string" && p.trim()) : [];
 
   const isPdf = mediaType === "application/pdf";
   const isImage = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"].includes(mediaType);
@@ -207,7 +221,13 @@ Deno.serve(async (req: Request) => {
               documentBlock,
               {
                 type: "text",
-                text: "Lies diesen Frachtbrief aus und trage die Daten über frachtbrief_daten ein.",
+                text:
+                  plateList.length > 0
+                    ? "Lies diesen Frachtbrief aus und trage die Daten über frachtbrief_daten ein. " +
+                      "Bekannte Kennzeichen aus unserem Fuhrpark (für das Feld \"lkw\" - ordne das " +
+                      "handschriftlich eingetragene Kennzeichen, falls möglich, einem dieser Werte " +
+                      "zu): " + plateList.join(", ")
+                    : "Lies diesen Frachtbrief aus und trage die Daten über frachtbrief_daten ein.",
               },
             ],
           },
