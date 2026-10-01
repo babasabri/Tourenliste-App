@@ -1049,6 +1049,11 @@ export default function TourenApp() {
       } else {
         lkwWarn = `Kennzeichen "${extracted.lkw}" wurde nicht in den Stammdaten gefunden - bitte LKW manuell auswählen.`;
       }
+    } else {
+      // Bisher blieb das hier still, wenn die KI gar kein Kennzeichen zurückgegeben
+      // hat (z. B. weil es nur handschriftlich und ohne eigenes Feldlabel auf dem
+      // Dokument stand) - wirkte dann so, als wäre alles erkannt worden.
+      lkwWarn = "Kennzeichen wurde auf dem Dokument nicht gefunden - bitte LKW manuell auswählen.";
     }
 
     setField("auftragsNr", extracted.auftragsNr);
