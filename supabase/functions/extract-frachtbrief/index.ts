@@ -54,7 +54,15 @@ const EXTRACTION_TOOL = {
   input_schema: {
     type: "object",
     properties: {
-      datum: { type: "string", description: "Datum der Tour, Format TT.MM.JJJJ." },
+      datum: {
+        type: "string",
+        description:
+          "Datum der Tour, Format TT.MM.JJJJ. IMMER aus dem Feld \"GEST.DATUM\" übernehmen " +
+          "(Gestellungsdatum, z.B. \"30.09.2026 08:00\" - davon nur den Datumsteil, die Uhrzeit " +
+          "hier weglassen). NIEMALS das Feld \"DATUM:\" oben im Kopfbereich des Dokuments " +
+          "verwenden - das ist nur das Druck-/Ausstellungsdatum des Dokuments, nicht das " +
+          "Tourdatum.",
+      },
       lkw: {
         type: "string",
         description:
