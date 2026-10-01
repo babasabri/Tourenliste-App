@@ -249,9 +249,9 @@ export async function fetchCustomers() {
 // Anthropic-API) eine Error mit einer für den Nutzer verständlichen Meldung -
 // App.jsx zeigt sie direkt im "Neue Tour"-Formular an. Die zurückgegebenen
 // Werte sind ein Vorschlag, kein Ersatz für die Prüfung durch den Disponenten.
-export async function extractFrachtbrief(fileBase64, mediaType) {
+export async function extractFrachtbrief(fileBase64, mediaType, knownPlates) {
   const { data, error } = await supabase.functions.invoke("extract-frachtbrief", {
-    body: { fileBase64, mediaType },
+    body: { fileBase64, mediaType, knownPlates: knownPlates || [] },
   });
   if (error) {
     // supabase-js liefert bei einem Fehlerstatus meist nur eine generische
