@@ -57,9 +57,26 @@ const EXTRACTION_TOOL = {
       datum: { type: "string", description: "Datum der Tour, Format TT.MM.JJJJ." },
       lkw: {
         type: "string",
-        description: "Kfz-Kennzeichen der Zugmaschine, so wie eingetragen (oft handschriftlich).",
+        description:
+          "Kfz-Kennzeichen der Zugmaschine (LKW). WICHTIG: Auf diesem Dokumenttyp gibt es KEIN " +
+          "Feld, das \"Kennzeichen\" heißt - das Kennzeichen steht handschriftlich oben im " +
+          "Kopfbereich des Dokuments, meist direkt neben oder unter der Zeile " +
+          "\"Auftraggeber:\"/\"ORIGINAL\" (typisches Format: zwei Buchstaben, Bindestrich " +
+          "oder Leerzeichen, dann Buchstaben und Zahlen, z.B. \"OF-RY 800\", \"B-CY 3552\"). " +
+          "Nicht verwechseln mit dem Wert im Feld \"CHASSIS:\" weiter unten - das ist eine " +
+          "andere, hier nicht benötigte Kennung (z.B. des Anhängers/Chassis) und darf " +
+          "NIEMALS als Kennzeichen übernommen werden.",
       },
-      auftragsNr: { type: "string", description: "Auftrags-Nr. / Order-Nr., in der Regel gedruckt." },
+      auftragsNr: {
+        type: "string",
+        description:
+          "Die interne Auftragsnummer - das ist IMMER der Wert im Feld \"INT. ORDER NO.\" " +
+          "(Format: mehrstellige Zahl, Schrägstrich, weitere Ziffer, z.B. \"3500952/1\"). " +
+          "NIEMALS das Feld \"EXT. ORDER NO.\" (oft mit Zusatz \"Carrier\" oder \"Merchant\") " +
+          "und NIEMALS \"LADENUMMER\" verwenden, auch wenn diese Felder ähnlich aussehen " +
+          "oder sogar denselben Wert enthalten wie \"EXT. ORDER NO.\" - beide sind NICHT " +
+          "die Auftragsnummer.",
+      },
       containerNr: {
         type: "string",
         description:
