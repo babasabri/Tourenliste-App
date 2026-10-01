@@ -1137,7 +1137,12 @@ export default function TourenApp() {
     setFbInfo(null);
     try {
       const fileBase64 = await fileToBase64(file);
-      const extracted = await db.extractFrachtbrief(fileBase64, file.type);
+      // Bekannte Kennzeichen aus den Stammdaten mitschicken, damit die KI das
+      // handschriftliche Kennzeichen gegen die tatsächlich existierenden LKW
+      // abgleichen kann, statt es rein aus der Handschrift zu erraten - bei
+      // einem kleinen, festen Fuhrpark deutlich zuverlässiger als freie OCR.
+      const knownPlates = fleet.map((f) => f.plate).filter(Boolean);
+      const extracted = await db.extractFrachtbrief(fileBase64, file.type, knownPlates);
       applyFrachtbriefData(extracted);
     } catch (err) {
       setFbError(err.message || "Frachtbrief konnte nicht ausgelesen werden.");
