@@ -1279,6 +1279,20 @@ export default function TourenApp() {
     }
   }
 
+  // Öffnet die zur Prüflisten-Zeile verknüpfte Tour im normalen Bearbeiten-Modal
+  // (gleiche openEdit()-Funktion wie überall sonst in der App). Nur möglich, wenn
+  // die Zeile eindeutig genau einer Tour zugeordnet ist (status "differenz") -
+  // bei "mehrdeutig"/"nicht_gefunden" gibt es keine einzelne Tour zum Öffnen.
+  function openEditFromGutschrift(r) {
+    if (!r.tour_id) return;
+    const tour = tours.find((t) => t.id === r.tour_id);
+    if (!tour) {
+      setGsReviewError("Tour nicht gefunden (evtl. inzwischen gelöscht) - bitte über Suche prüfen.");
+      return;
+    }
+    openEdit(tour);
+  }
+
   function doSaveTour() {
     // Status kommt jetzt aus dem Formular (Pflichtfeld) statt fest auf "Offen".
     const rec = { ...form, id: uid() };
@@ -2292,7 +2306,12 @@ export default function TourenApp() {
                         <tr><td colSpan={8} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>Keine offenen Differenzen - alles geprüft.</td></tr>
                       )}
                       {gsReview.map((r) => (
-                        <tr key={r.id}>
+                        <tr
+                          key={r.id}
+                          onDoubleClick={() => openEditFromGutschrift(r)}
+                          style={r.tour_id ? { cursor: "pointer" } : undefined}
+                          title={r.tour_id ? "Doppelklick zum Bearbeiten der Tour" : "Mehrere/keine passende Tour - bitte über Suche prüfen"}
+                        >
                           <td><GutschriftStatusBadge status={r.status} /></td>
                           <td className="mono">{r.order_nr}</td>
                           <td>{r.kunde_gutschrift}</td>
@@ -2302,7 +2321,12 @@ export default function TourenApp() {
                           <td style={{ fontSize: 11.5, color: TEXT_MUTED }}>
                             {r.gutschrift_imports?.beleg_nr || "–"}{r.gutschrift_imports?.rg_datum ? ` · ${formatDateDMY(r.gutschrift_imports.rg_datum)}` : ""}
                           </td>
-                          <td>
+                          <td style={{ display: "flex", gap: 4 }}>
+                            {r.tour_id && (
+                              <button className="ghost" style={{ padding: "4px 8px" }} onClick={() => openEditFromGutschrift(r)} title="Tour bearbeiten">
+                                <Pencil size={13} />
+                              </button>
+                            )}
                             <button className="ghost" style={{ padding: "4px 8px" }} onClick={() => handleGutschriftErledigt(r.id)} title="Als erledigt markieren (z.B. nach manueller Korrektur der Tour)">
                               <CheckCircle2 size={13} /> Erledigt
                             </button>
