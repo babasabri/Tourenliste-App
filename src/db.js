@@ -80,6 +80,13 @@ const tourFromDb = (r) => ({
   diesel: nullToEmpty(r.diesel),
   bemerkungen: nullToEmpty(r.bemerkungen),
   status: nullToEmpty(r.status),
+  // Werden nur vom Gutschriften-Abgleich automatisch gesetzt (siehe
+  // gutschrift_apply_import) - hier rein lesend für die Anzeige, es gibt
+  // bewusst kein Formularfeld dafür. tourToDb() sendet diese Felder nicht
+  // mit, daher bleiben sie beim normalen Bearbeiten/Speichern einer Tour
+  // unangetastet (Supabase upsert() ändert nur mitgeschickte Spalten).
+  gutschriftNr: nullToEmpty(r.gutschrift_nr),
+  gutschriftDatum: nullToEmpty(r.gutschrift_datum),
 });
 
 // Supabase/PostgREST liefert pro Anfrage standardmäßig maximal 1000 Zeilen
