@@ -2038,12 +2038,12 @@ export default function TourenApp() {
                     <th>Auftrags-Nr.</th>
                     {COSTFIELDS.map((k) => <th key={k} style={{ textAlign: "right" }}>{COSTFIELD_LABELS[k]}</th>)}
                     <th style={{ textAlign: "right" }}>Gesamt</th>
-                    <th>Status</th><th></th>
+                    <th>Status</th><th>Gutschrift</th><th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {tourenList.length === 0 && (
-                    <tr><td colSpan={16} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>
+                    <tr><td colSpan={17} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>
                       {tourenMonat !== "ALLE" ? "Keine Touren in diesem Monat." : "Noch keine Touren erfasst."}
                     </td></tr>
                   )}
@@ -2065,6 +2065,13 @@ export default function TourenApp() {
                           <span style={{ color: sc.text, fontSize: 12, fontWeight: 700 }}>
                             {t.status}
                           </span>
+                        </td>
+                        <td style={{ fontSize: 11.5, color: TEXT_MUTED }}>
+                          {t.gutschriftNr ? (
+                            <span className="mono" title={t.gutschriftDatum ? `vom ${formatDateDMY(t.gutschriftDatum)}` : undefined}>
+                              {t.gutschriftNr}
+                            </span>
+                          ) : "–"}
                         </td>
                         <td>
                           <button className="ghost" onClick={() => openEdit(t)} style={{ padding: "4px 8px" }}>
@@ -2638,12 +2645,12 @@ export default function TourenApp() {
                   <tr>
                     <th>Datum</th><th>KW</th><th>LKW</th><th>Kunde</th><th>Container-Nr.</th><th>PLZ</th><th>Ort</th>
                     {COSTFIELDS.map((k) => <th key={k} style={{ textAlign: "right" }}>{COSTFIELD_LABELS[k]}</th>)}
-                    <th style={{ textAlign: "right" }}>Gesamt</th><th>Status</th><th></th>
+                    <th style={{ textAlign: "right" }}>Gesamt</th><th>Status</th><th>Gutschrift</th><th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {searchResults.length === 0 && (
-                    <tr><td colSpan={17} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>
+                    <tr><td colSpan={18} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>
                       {Object.values(search).some(Boolean) ? "Keine Treffer." : "Mindestens ein Suchfeld ausfüllen."}
                     </td></tr>
                   )}
@@ -2663,6 +2670,13 @@ export default function TourenApp() {
                         ))}
                         <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>{euro(gesamt(t))}</td>
                         <td><span style={{ color: sc.text, fontSize: 12, fontWeight: 700 }}>{t.status}</span></td>
+                        <td style={{ fontSize: 11.5, color: TEXT_MUTED }}>
+                          {t.gutschriftNr ? (
+                            <span className="mono" title={t.gutschriftDatum ? `vom ${formatDateDMY(t.gutschriftDatum)}` : undefined}>
+                              {t.gutschriftNr}
+                            </span>
+                          ) : "–"}
+                        </td>
                         <td>
                           <div style={{ display: "flex", gap: 4 }}>
                             <button className="ghost" onClick={() => openEdit(t)} style={{ padding: "4px 8px" }} title="Bearbeiten">
@@ -3326,6 +3340,13 @@ export default function TourenApp() {
               <div style={{ fontSize: 15, fontWeight: 600 }}>Tour bearbeiten</div>
               <button className="ghost" style={{ padding: 6 }} onClick={() => { setEditId(null); setEditForm(null); setConfirmDelete(false); setEditErrors([]); setEditSaveNote(""); }}><X size={15} /></button>
             </div>
+            {editForm.gutschriftNr && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#1B5E20", background: "#E7F6EF", borderRadius: 8, padding: "8px 12px", marginBottom: 14 }}>
+                <Receipt size={14} />
+                Automatisch abgerechnet über Gutschrift-Nr. <span className="mono" style={{ fontWeight: 700 }}>{editForm.gutschriftNr}</span>
+                {editForm.gutschriftDatum ? ` vom ${formatDateDMY(editForm.gutschriftDatum)}` : ""}
+              </div>
+            )}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <div><label>Datum *</label>
                 <input type="date" value={editForm.datum} style={fieldStyle("datum", editErrors)}
