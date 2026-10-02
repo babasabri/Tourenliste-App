@@ -271,6 +271,129 @@ export async function extractFrachtbrief(fileBase64, mediaType, knownPlates) {
   return data.data;
 }
 
+// ------------------------------------------------------- Gutschriften-Abgleich --
+// Die eigentliche PDF-Auswertung (Text-Parsing) passiert rein im Browser, s.
+// gutschriftParser.js - hier geht es nur noch um den Abgleich der bereits
+// ausgelesenen Positionen gegen die Datenbank sowie das (atomare) Schreiben.
+//
+// Abgleichs-Logik je Position (orderNr + betrag aus der PDF):
+//  - Kandidaten = alle Touren mit genau dieser auftrags_nr, die NICHT bereits
+//    "Abgerechnet" sind (eine Auftragsnummer kann laut Nutzer-Angabe mehrfach
+//    vorkommen - abgerechnete Touren sind dann aber keine Kandidaten mehr).
+//  - 0 Kandidaten -> "nicht_gefunden"
+//  - genau 1 Kandidat -> Beträge vergleichen; exakte Übereinstimmung (auf den
+//    Cent) -> "abgerechnet", sonst "differenz" (Tour bleibt trotzdem
+//    verknüpft, damit man im Prüf-Screen direkt sieht, welche Tour gemeint
+//    ist und wie groß die Abweichung ist).
+//  - >1 Kandidaten -> "mehrdeutig" (keine automatische Entscheidung, da nicht
+//    zuverlässig unterscheidbar - siehe Nutzer-Rückmeldung dazu).
+const GUTSCHRIFT_COSTFIELDS = ["fracht", "fd", "adr", "multistop", "wartezeit", "maut", "diesel"];
+
+function tourSumme(t) {
+  return Math.round(GUTSCHRIFT_COSTFIELDS.reduce((s, k) => s + (Number(t[k]) || 0), 0) * 100) / 100;
+}
+
+export async function matchGutschriftPositionen(positionen) {
+  const orderNrs = [...new Set(positionen.map((p) => p.orderNr).filter(Boolean))];
+  if (orderNrs.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("tours")
+    .select("id, datum, lkw, kunde, auftrags_nr, status, fracht, fd, adr, multistop, wartezeit, maut, diesel")
+    .in("auftrags_nr", orderNrs)
+    .neq("status", "Abgerechnet");
+  if (error) throw error;
+
+  const byOrderNr = new Map();
+  for (const row of data) {
+    const list = byOrderNr.get(row.auftrags_nr) || [];
+    list.push(row);
+    byOrderNr.set(row.auftrags_nr, list);
+  }
+
+  return positionen.map((p) => {
+    const kandidaten = byOrderNr.get(p.orderNr) || [];
+    if (kandidaten.length === 0) {
+      return { ...p, status: "nicht_gefunden", tourId: null, betragTour: null, differenz: null, kandidatenAnzahl: 0, kandidaten: [] };
+    }
+    if (kandidaten.length > 1) {
+      return {
+        ...p, status: "mehrdeutig", tourId: null, betragTour: null, differenz: null,
+        kandidatenAnzahl: kandidaten.length,
+        kandidaten: kandidaten.map((t) => ({ id: t.id, datum: t.datum, lkw: t.lkw, kunde: t.kunde, betrag: tourSumme(t) })),
+      };
+    }
+    const tour = kandidaten[0];
+    const betragTour = tourSumme(tour);
+    const differenz = Math.round((p.betrag - betragTour) * 100) / 100;
+    const status = Math.abs(differenz) <= 0.01 ? "abgerechnet" : "differenz";
+    return {
+      ...p, status, tourId: tour.id, betragTour, differenz, kandidatenAnzahl: 1,
+      kandidaten: [{ id: tour.id, datum: tour.datum, lkw: tour.lkw, kunde: tour.kunde, betrag: betragTour }],
+    };
+  });
+}
+
+// Schreibt den geprüften Import inkl. aller Positionen atomar über die
+// Postgres-Funktion gutschrift_apply_import (siehe Migration) und setzt dabei
+// serverseitig auch gleich den Status/die Gutschrift-Nr. der betroffenen
+// Touren. Gibt die frisch geladene Tourenliste zurück (wie syncTours/
+// insertTours), damit der aufrufende Code direkt setTours(...) aufrufen kann.
+export async function applyGutschriftImport(meta, positionen) {
+  const { error } = await supabase.rpc("gutschrift_apply_import", {
+    p_dateiname: meta.dateiname || null,
+    p_beleg_nr: meta.belegNr || null,
+    p_rg_datum: meta.rgDatum || null,
+    p_hochgeladen_von: meta.hochgeladenVon || null,
+    p_dokument_summe: meta.dokumentSumme ?? null,
+    p_positionen: positionen.map((p) => ({
+      orderNr: p.orderNr,
+      kunde: p.kunde,
+      betrag: p.betrag,
+      zeilen: p.zeilen,
+      tourId: p.tourId || "",
+      betragTour: p.betragTour === null || p.betragTour === undefined ? "" : p.betragTour,
+      differenz: p.differenz === null || p.differenz === undefined ? "" : p.differenz,
+      kandidatenAnzahl: p.kandidatenAnzahl || 0,
+      status: p.status,
+    })),
+  });
+  if (error) throw error;
+  return fetchTours();
+}
+
+// Offene Prüf-Positionen (Differenz/mehrdeutig/nicht gefunden, noch nicht als
+// erledigt markiert) über alle Imports hinweg - für die laufende Prüfliste,
+// unabhängig vom zuletzt hochgeladenen Import.
+export async function fetchOffeneGutschriftPositionen() {
+  const { data, error } = await supabase
+    .from("gutschrift_positionen")
+    .select("*, gutschrift_imports(beleg_nr, rg_datum, dateiname, created_at)")
+    .neq("status", "abgerechnet")
+    .eq("erledigt", false)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data;
+}
+
+export async function fetchGutschriftImports() {
+  const { data, error } = await supabase
+    .from("gutschrift_imports")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data;
+}
+
+export async function markGutschriftPositionErledigt(id, notiz) {
+  const { error } = await supabase
+    .from("gutschrift_positionen")
+    .update({ erledigt: true, erledigt_notiz: notiz || null, erledigt_am: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw error;
+  return fetchOffeneGutschriftPositionen();
+}
+
 // -------------------------------------------------------------- Einsatzplan --
 const einsatzToDb = (e) => ({
   jahr: e.jahr,
