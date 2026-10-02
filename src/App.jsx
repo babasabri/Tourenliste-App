@@ -7,8 +7,11 @@ import {
   LayoutDashboard, Truck, PlusCircle, Search as SearchIcon, Users,
   Fuel, X, Save, Trash2, Pencil, AlertTriangle, CalendarClock, Upload, ListChecks, RefreshCw,
   TrendingUp, MapPin, FileDown, FileText, FileSpreadsheet, FileScan, Loader2, Menu,
+  Receipt, CheckCircle2, HelpCircle,
 } from "lucide-react";
 import * as db from "./db";
+import { parseGutschriftPdf } from "./gutschriftParser";
+import { supabase } from "./supabaseClient";
 // Export-Bibliotheken (jsPDF, ExcelJS) sind vergleichsweise groß - werden per
 // dynamic import() erst geladen, wenn der Export-Tab tatsächlich genutzt wird,
 // statt das Hauptbundle für alle Nutzer aufzublähen (siehe handleExportPdf/
@@ -572,6 +575,27 @@ function statusColors(status) {
   return { bg: "#FFFF99", text: "#6B5900" };
 }
 
+// Status-Badge für den Gutschriften-Abgleich (eigene vier Werte, nicht zu
+// verwechseln mit dem Tour-Status oben).
+function GutschriftStatusBadge({ status }) {
+  const map = {
+    abgerechnet: { label: "Abgerechnet", bg: "#99FF99", text: "#1B5E20", icon: CheckCircle2 },
+    differenz: { label: "Differenz", bg: "#FF9966", text: "#7A2E00", icon: AlertTriangle },
+    mehrdeutig: { label: "Mehrdeutig", bg: "#FDF1DD", text: "#8A5A10", icon: HelpCircle },
+    nicht_gefunden: { label: "Nicht gefunden", bg: "#E1E6EC", text: "#64707C", icon: HelpCircle },
+  };
+  const s = map[status] || map.nicht_gefunden;
+  const Icon = s.icon;
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 700,
+      color: s.text, background: s.bg, borderRadius: 6, padding: "3px 8px",
+    }}>
+      <Icon size={12} /> {s.label}
+    </span>
+  );
+}
+
 export default function TourenApp() {
   const [tours, setTours] = useState([]);
   const [fleet, setFleet] = useState([]);
@@ -589,6 +613,19 @@ export default function TourenApp() {
   const [fbLoading, setFbLoading] = useState(false);
   const [fbError, setFbError] = useState("");
   const [fbInfo, setFbInfo] = useState(null);
+  // Gutschriften-Abgleich: gsLoading während PDF-Auslesen+Abgleich,
+  // gsPreview = { meta, positionen } solange noch nicht übernommen (erst nach
+  // Klick auf "Übernehmen" werden Status/DB tatsächlich geändert), gsApplying
+  // während des Schreibens, gsResult = letzte Zusammenfassung nach dem
+  // Übernehmen. gsReview = laufende, Import-übergreifende Prüfliste.
+  const [gsLoading, setGsLoading] = useState(false);
+  const [gsError, setGsError] = useState("");
+  const [gsPreview, setGsPreview] = useState(null);
+  const [gsApplying, setGsApplying] = useState(false);
+  const [gsResult, setGsResult] = useState(null);
+  const [gsReview, setGsReview] = useState([]);
+  const [gsReviewLoading, setGsReviewLoading] = useState(false);
+  const [gsReviewError, setGsReviewError] = useState("");
   const [editId, setEditId] = useState(null);
   const [editForm, setEditForm] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -702,6 +739,12 @@ export default function TourenApp() {
     setEpDirty(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [epJahr, epKw, fleet]);
+
+  // Prüfliste (offene Gutschrift-Differenzen) beim ersten Öffnen des Tabs laden.
+  useEffect(() => {
+    if (tab === "gutschriften") loadGutschriftReview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   function setEpDraftField(plate, field, value) {
     setEpDraft((d) => ({ ...d, [plate]: { ...d[plate], [field]: value } }));
@@ -1151,6 +1194,91 @@ export default function TourenApp() {
     }
   }
 
+  // --------------------------------------------------- Gutschriften-Abgleich --
+  async function loadGutschriftReview() {
+    setGsReviewLoading(true);
+    setGsReviewError("");
+    try {
+      setGsReview(await db.fetchOffeneGutschriftPositionen());
+    } catch (err) {
+      setGsReviewError(err.message || "Prüfliste konnte nicht geladen werden.");
+    } finally {
+      setGsReviewLoading(false);
+    }
+  }
+
+  async function handleGutschriftUpload(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    if (file.type !== "application/pdf") {
+      setGsError("Bitte eine PDF-Datei hochladen.");
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      setGsError("Datei ist zu groß (max. 20 MB).");
+      return;
+    }
+
+    setGsLoading(true);
+    setGsError("");
+    setGsPreview(null);
+    setGsResult(null);
+    try {
+      const parsed = await parseGutschriftPdf(file);
+      const abgeglichen = await db.matchGutschriftPositionen(parsed.positionen);
+      setGsPreview({ meta: parsed, positionen: abgeglichen });
+    } catch (err) {
+      setGsError(err.message || "Gutschrift konnte nicht ausgelesen werden.");
+    } finally {
+      setGsLoading(false);
+    }
+  }
+
+  async function handleGutschriftApply() {
+    if (!gsPreview) return;
+    setGsApplying(true);
+    setGsError("");
+    try {
+      let hochgeladenVon = "";
+      try {
+        const { data } = await supabase.auth.getUser();
+        hochgeladenVon = data?.user?.email || "";
+      } catch { /* Login-Info nicht kriegsentscheidend - notfalls leer lassen */ }
+
+      const meta = {
+        dateiname: gsPreview.meta.dateiname,
+        belegNr: gsPreview.meta.belegNr,
+        rgDatum: gsPreview.meta.rgDatum,
+        dokumentSumme: gsPreview.meta.dokumentSumme,
+        hochgeladenVon,
+      };
+      const freshTours = await db.applyGutschriftImport(meta, gsPreview.positionen);
+      setTours(freshTours);
+      setGsResult({
+        anzahl: gsPreview.positionen.length,
+        abgerechnet: gsPreview.positionen.filter((p) => p.status === "abgerechnet").length,
+        differenz: gsPreview.positionen.filter((p) => p.status === "differenz").length,
+        mehrdeutig: gsPreview.positionen.filter((p) => p.status === "mehrdeutig").length,
+        nichtGefunden: gsPreview.positionen.filter((p) => p.status === "nicht_gefunden").length,
+      });
+      setGsPreview(null);
+      loadGutschriftReview();
+    } catch (err) {
+      setGsError(err.message || "Gutschrift konnte nicht übernommen werden.");
+    } finally {
+      setGsApplying(false);
+    }
+  }
+
+  async function handleGutschriftErledigt(id) {
+    try {
+      setGsReview(await db.markGutschriftPositionErledigt(id));
+    } catch (err) {
+      setGsReviewError(err.message || "Konnte nicht als erledigt markiert werden.");
+    }
+  }
+
   function doSaveTour() {
     // Status kommt jetzt aus dem Formular (Pflichtfeld) statt fest auf "Offen".
     const rec = { ...form, id: uid() };
@@ -1555,6 +1683,7 @@ export default function TourenApp() {
     { id: "touren", label: "Touren", icon: Truck },
     { id: "suche", label: "Suche", icon: SearchIcon },
     { id: "reklamationen", label: "Reklamationen", icon: AlertTriangle },
+    { id: "gutschriften", label: "Gutschriften", icon: Receipt },
     { id: "einsatz", label: "Einsatzplan", icon: CalendarClock },
     { id: "stamm", label: "Stammdaten", icon: Users },
     { id: "import", label: "Import", icon: Upload },
@@ -2010,6 +2139,179 @@ export default function TourenApp() {
                   })}
                 </tbody>
               </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "gutschriften" && (
+          <div>
+            <PageHeading icon={Receipt} title="Gutschriften-Abgleich" subtitle="Wöchentliche Gutschrift hochladen - Touren werden automatisch über die Auftragsnummer abgeglichen" />
+
+            <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 24, marginBottom: 20, maxWidth: 640 }}>
+              <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>Gutschrift hochladen</div>
+              <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 16 }}>
+                PDF auswählen. Die Beträge werden direkt aus dem Text der PDF gelesen (kein Scan, keine KI) und je
+                Auftragsnummer mit den noch nicht abgerechneten Touren verglichen. Es wird noch nichts gespeichert -
+                erst nach Prüfung der Vorschau unten per Klick auf "Übernehmen".
+              </div>
+              <input type="file" accept="application/pdf,.pdf" onChange={handleGutschriftUpload} disabled={gsLoading} />
+              {gsLoading && (
+                <div style={{ marginTop: 14, fontSize: 13, color: MARINE, display: "flex", alignItems: "center", gap: 8 }}>
+                  <Loader2 size={15} /> Lese Gutschrift aus …
+                </div>
+              )}
+              {gsError && (
+                <div style={{ marginTop: 14, fontSize: 12.5, color: DANGER, background: DANGER_BG, borderRadius: 8, padding: "10px 14px" }}>
+                  {gsError}
+                </div>
+              )}
+              {gsResult && (
+                <div style={{ marginTop: 14, fontSize: 12.5, color: SUCCESS, background: "#E7F6EF", borderRadius: 8, padding: "10px 14px" }}>
+                  Übernommen: {gsResult.abgerechnet} von {gsResult.anzahl} Positionen automatisch auf "Abgerechnet" gesetzt.
+                  {(gsResult.differenz + gsResult.mehrdeutig + gsResult.nichtGefunden) > 0 && (
+                    <> {gsResult.differenz + gsResult.mehrdeutig + gsResult.nichtGefunden} weitere stehen jetzt in der Prüfliste unten.</>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {gsPreview && (() => {
+              const pos = gsPreview.positionen;
+              const counts = {
+                abgerechnet: pos.filter((p) => p.status === "abgerechnet"),
+                differenz: pos.filter((p) => p.status === "differenz"),
+                mehrdeutig: pos.filter((p) => p.status === "mehrdeutig"),
+                nicht_gefunden: pos.filter((p) => p.status === "nicht_gefunden"),
+              };
+              const blockiert = gsPreview.meta.summenAbweichung;
+              return (
+                <div style={{ marginBottom: 28 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+                    Vorschau: {gsPreview.meta.dateiname}
+                    {gsPreview.meta.belegNr && <span style={{ color: TEXT_MUTED, fontWeight: 500 }}> · Gutschrift-Nr. {gsPreview.meta.belegNr}</span>}
+                    {gsPreview.meta.rgDatum && <span style={{ color: TEXT_MUTED, fontWeight: 500 }}> · {formatDateDMY(gsPreview.meta.rgDatum)}</span>}
+                  </div>
+
+                  <div style={{
+                    fontSize: 12.5, borderRadius: 8, padding: "10px 14px", marginBottom: 14,
+                    background: blockiert ? DANGER_BG : "#E7F6EF", color: blockiert ? DANGER : SUCCESS,
+                  }}>
+                    {blockiert ? (
+                      <>
+                        ⚠ Eigenkontrolle fehlgeschlagen: Summe der erkannten Positionen ({euro(gsPreview.meta.parsedSumme)}) weicht von der
+                        im Dokument ausgewiesenen Endsumme ({euro(gsPreview.meta.dokumentSumme)}) ab. "Übernehmen" ist deshalb deaktiviert -
+                        bitte die Datei prüfen oder zur Kontrolle weitergeben, statt die Werte blind zu übernehmen.
+                      </>
+                    ) : gsPreview.meta.dokumentSumme !== null ? (
+                      <>✓ Eigenkontrolle ok: Summe der erkannten Positionen entspricht der Endsumme im Dokument ({euro(gsPreview.meta.dokumentSumme)}).</>
+                    ) : (
+                      <>Hinweis: Endsumme konnte im Dokument nicht gefunden werden - bitte Summe ({euro(gsPreview.meta.parsedSumme)}) einmal gegen die Gutschrift prüfen.</>
+                    )}
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 16 }}>
+                    {[
+                      { key: "abgerechnet", label: "Wird abgerechnet", color: SUCCESS },
+                      { key: "differenz", label: "Differenz", color: DANGER },
+                      { key: "mehrdeutig", label: "Mehrdeutig", color: AMBER_DARK },
+                      { key: "nicht_gefunden", label: "Nicht gefunden", color: TEXT_MUTED },
+                    ].map((k) => (
+                      <div key={k.key} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "12px 14px" }}>
+                        <div style={{ fontSize: 10.5, color: TEXT_MUTED, fontWeight: 600, marginBottom: 4 }}>{k.label.toUpperCase()}</div>
+                        <div className="mono" style={{ fontSize: 19, fontWeight: 700, color: k.color }}>{counts[k.key].length}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden", marginBottom: 14 }}>
+                    <div style={{ overflowX: "auto" }}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Status</th><th>Auftrags-Nr.</th><th>Kunde (Gutschrift)</th>
+                            <th style={{ textAlign: "right" }}>Betrag Gutschrift</th>
+                            <th style={{ textAlign: "right" }}>Betrag Tour</th>
+                            <th style={{ textAlign: "right" }}>Differenz</th>
+                            <th>Hinweis</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {pos.map((p, i) => (
+                            <tr key={i}>
+                              <td><GutschriftStatusBadge status={p.status} /></td>
+                              <td className="mono">{p.orderNr}</td>
+                              <td>{p.kunde}</td>
+                              <td className="mono" style={{ textAlign: "right" }}>{euro(p.betrag)}</td>
+                              <td className="mono" style={{ textAlign: "right" }}>{p.betragTour === null ? "–" : euro(p.betragTour)}</td>
+                              <td className="mono" style={{ textAlign: "right", color: p.differenz && Math.abs(p.differenz) > 0.01 ? DANGER : TEXT_MUTED }}>
+                                {p.differenz === null ? "–" : euro(p.differenz)}
+                              </td>
+                              <td style={{ fontSize: 11.5, color: TEXT_MUTED }}>
+                                {p.status === "mehrdeutig" && `${p.kandidatenAnzahl} offene Touren mit dieser Nr. - bitte manuell prüfen`}
+                                {p.status === "nicht_gefunden" && "Keine offene Tour mit dieser Auftragsnummer gefunden"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <button className="primary" disabled={blockiert || gsApplying} onClick={handleGutschriftApply} style={(blockiert || gsApplying) ? { opacity: 0.6, cursor: "default" } : undefined}>
+                    <CheckCircle2 size={15} /> {gsApplying ? "Übernehme …" : `Übernehmen (${counts.abgerechnet.length} Touren werden auf "Abgerechnet" gesetzt)`}
+                  </button>
+                </div>
+              );
+            })()}
+
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Prüfliste (offene Differenzen aus allen Imports)</div>
+              {gsReviewError && (
+                <div style={{ fontSize: 12.5, color: DANGER, background: DANGER_BG, borderRadius: 8, padding: "10px 14px", marginBottom: 12 }}>
+                  {gsReviewError}
+                </div>
+              )}
+              <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
+                <div style={{ overflowX: "auto" }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Status</th><th>Auftrags-Nr.</th><th>Kunde</th>
+                        <th style={{ textAlign: "right" }}>Betrag Gutschrift</th>
+                        <th style={{ textAlign: "right" }}>Betrag Tour</th>
+                        <th style={{ textAlign: "right" }}>Differenz</th>
+                        <th>Gutschrift</th><th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {gsReviewLoading && (
+                        <tr><td colSpan={8} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>Lade …</td></tr>
+                      )}
+                      {!gsReviewLoading && gsReview.length === 0 && (
+                        <tr><td colSpan={8} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>Keine offenen Differenzen - alles geprüft.</td></tr>
+                      )}
+                      {gsReview.map((r) => (
+                        <tr key={r.id}>
+                          <td><GutschriftStatusBadge status={r.status} /></td>
+                          <td className="mono">{r.order_nr}</td>
+                          <td>{r.kunde_gutschrift}</td>
+                          <td className="mono" style={{ textAlign: "right" }}>{euro(r.betrag_gutschrift)}</td>
+                          <td className="mono" style={{ textAlign: "right" }}>{r.betrag_tour === null ? "–" : euro(r.betrag_tour)}</td>
+                          <td className="mono" style={{ textAlign: "right", color: DANGER }}>{r.differenz === null ? "–" : euro(r.differenz)}</td>
+                          <td style={{ fontSize: 11.5, color: TEXT_MUTED }}>
+                            {r.gutschrift_imports?.beleg_nr || "–"}{r.gutschrift_imports?.rg_datum ? ` · ${formatDateDMY(r.gutschrift_imports.rg_datum)}` : ""}
+                          </td>
+                          <td>
+                            <button className="ghost" style={{ padding: "4px 8px" }} onClick={() => handleGutschriftErledigt(r.id)} title="Als erledigt markieren (z.B. nach manueller Korrektur der Tour)">
+                              <CheckCircle2 size={13} /> Erledigt
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           </div>
