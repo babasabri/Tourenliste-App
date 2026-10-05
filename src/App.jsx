@@ -628,6 +628,10 @@ export default function TourenApp() {
   const [gsReviewError, setGsReviewError] = useState("");
   const [editId, setEditId] = useState(null);
   const [editForm, setEditForm] = useState(null);
+  // Gesetzt, wenn das Bearbeiten-Fenster über die Gutschriften-Prüfliste
+  // geöffnet wurde (id der Prüflisten-Zeile) - beim Speichern wird diese
+  // Zeile dann automatisch als erledigt markiert, siehe saveEdit().
+  const [editFromGutschriftId, setEditFromGutschriftId] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [search, setSearch] = useState({ nr: "", containerNr: "", kunde: "", plz: "", ort: "", lkw: "", status: "" });
   // Suche: id der Tour, deren Status gerade per Schnellauswahl geändert wird
@@ -1283,6 +1287,8 @@ export default function TourenApp() {
   // (gleiche openEdit()-Funktion wie überall sonst in der App). Nur möglich, wenn
   // die Zeile eindeutig genau einer Tour zugeordnet ist (status "differenz") -
   // bei "mehrdeutig"/"nicht_gefunden" gibt es keine einzelne Tour zum Öffnen.
+  // Merkt sich die Prüflisten-Zeile (editFromGutschriftId), damit saveEdit()
+  // sie beim Speichern automatisch als erledigt markieren kann.
   function openEditFromGutschrift(r) {
     if (!r.tour_id) return;
     const tour = tours.find((t) => t.id === r.tour_id);
@@ -1291,6 +1297,7 @@ export default function TourenApp() {
       return;
     }
     openEdit(tour);
+    setEditFromGutschriftId(r.id);
   }
 
   function doSaveTour() {
@@ -1340,6 +1347,7 @@ export default function TourenApp() {
   function openEdit(t) {
     setEditId(t.id);
     setEditForm({ ...t });
+    setEditFromGutschriftId(null);
     setConfirmDelete(false);
     setEditErrors([]);
     setEditSaveNote("");
@@ -1360,6 +1368,13 @@ export default function TourenApp() {
     setEditErrors([]);
     setEditSaveNote("");
     persistTours(tours.map((t) => (t.id === editId ? { ...editForm } : t)));
+    // Kam das Bearbeiten-Fenster aus der Gutschriften-Prüfliste, gilt die Zeile
+    // mit dem Speichern als erledigt (bessere Übersicht - kein zusätzlicher
+    // Klick auf "Erledigt" mehr nötig).
+    if (editFromGutschriftId) {
+      handleGutschriftErledigt(editFromGutschriftId);
+      setEditFromGutschriftId(null);
+    }
     setEditId(null);
     setEditForm(null);
   }
@@ -1368,6 +1383,7 @@ export default function TourenApp() {
     persistTours(tours.filter((t) => t.id !== id));
     setEditId(null);
     setEditForm(null);
+    setEditFromGutschriftId(null);
     setConfirmDelete(false);
   }
 
@@ -3338,7 +3354,7 @@ export default function TourenApp() {
           <div style={{ background: CARD, borderRadius: 12, padding: 24, width: 560, maxHeight: "85vh", overflowY: "auto" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <div style={{ fontSize: 15, fontWeight: 600 }}>Tour bearbeiten</div>
-              <button className="ghost" style={{ padding: 6 }} onClick={() => { setEditId(null); setEditForm(null); setConfirmDelete(false); setEditErrors([]); setEditSaveNote(""); }}><X size={15} /></button>
+              <button className="ghost" style={{ padding: 6 }} onClick={() => { setEditId(null); setEditForm(null); setEditFromGutschriftId(null); setConfirmDelete(false); setEditErrors([]); setEditSaveNote(""); }}><X size={15} /></button>
             </div>
             {editForm.gutschriftNr && (
               <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#1B5E20", background: "#E7F6EF", borderRadius: 8, padding: "8px 12px", marginBottom: 14 }}>
