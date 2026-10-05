@@ -1136,6 +1136,14 @@ export default function TourenApp() {
     if (abfahrt) setField("abfahrt", abfahrt);
     else if (extracted.abfahrt) unsure.add("abfahrt");
 
+    // Gefahrgut/ADR/UN-Nr.-Vermerk auf dem Dokument -> ADR-Kostenfeld auf den
+    // pauschalen Betrag setzen (amber markiert, da ein abgeleiteter Wert statt
+    // eines direkt abgelesenen).
+    if (extracted.gefahrgutErkannt) {
+      setField("adr", "10");
+      unsure.add("adr");
+    }
+
     if (extracted.km) {
       setField("km", extracted.km);
       const fracht = calcFracht(extracted.km);
@@ -1154,9 +1162,22 @@ export default function TourenApp() {
       unsure.add("maut");
     }
 
+    // Ankunft liegt immer vor Abfahrt - kommt die Erkennung in der falschen
+    // Reihenfolge heraus, wurden die beiden Uhrzeiten vermutlich vertauscht
+    // gelesen (z.B. Abfahrt stand näher an der vorgesehenen Ankunft-Zeile).
+    // Automatisch tauschen statt nur zu warnen, beide Felder amber markieren.
     let timeWarn = null;
-    if (next.ankunft && next.abfahrt && next.ankunft >= next.abfahrt) {
-      timeWarn = "Ankunft liegt nicht vor Abfahrt - bitte Uhrzeiten prüfen.";
+    if (next.ankunft && next.abfahrt && next.ankunft > next.abfahrt) {
+      const tmp = next.ankunft;
+      next.ankunft = next.abfahrt;
+      next.abfahrt = tmp;
+      unsure.add("ankunft");
+      unsure.add("abfahrt");
+      timeWarn = "Ankunft/Abfahrt wurden vertauscht erkannt und automatisch korrigiert - bitte kurz prüfen.";
+    } else if (next.ankunft && next.abfahrt && next.ankunft === next.abfahrt) {
+      unsure.add("ankunft");
+      unsure.add("abfahrt");
+      timeWarn = "Ankunft und Abfahrt sind identisch - bitte Uhrzeiten prüfen.";
     }
 
     setForm(next);
