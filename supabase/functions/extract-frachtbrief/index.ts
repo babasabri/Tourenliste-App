@@ -22,7 +22,7 @@
 // festen Fuhrpark deutlich zuverlässiger als freie OCR.
 //
 // Antwort bei Erfolg:
-//   { "data": { datum, lkw, auftragsNr, containerNr, kunde, plz, ort, ankunft, abfahrt, km, unsichereFelder } }
+//   { "data": { datum, lkw, auftragsNr, containerNr, kunde, plz, ort, ankunft, abfahrt, km, gefahrgutErkannt, unsichereFelder } }
 // Antwort bei Fehler:
 //   { "error": "<Text für den Nutzer>" }
 
@@ -118,7 +118,10 @@ const EXTRACTION_TOOL = {
         type: "string",
         description:
           "Ankunftszeit beim Kunden, Format HH:MM (24h, mit führender Null, z.B. \"08:30\" " +
-          "statt \"8:30\", ohne den Zusatz \"Uhr\"). Häufig handschriftlich ergänzt.",
+          "statt \"8:30\", ohne den Zusatz \"Uhr\"). Häufig handschriftlich ergänzt. WICHTIG: " +
+          "Die Ankunftszeit liegt IMMER vor der Abfahrtszeit, niemals danach oder gleichzeitig " +
+          "- findest du zwei handschriftliche Uhrzeiten und ist nicht eindeutig, welche zu " +
+          "welchem Feld gehört, ordne die frühere Uhrzeit der Ankunft zu.",
       },
       abfahrt: {
         type: "string",
@@ -126,9 +129,20 @@ const EXTRACTION_TOOL = {
           "Abfahrtszeit beim Kunden, Format HH:MM (24h, mit führender Null, z.B. \"08:30\" " +
           "statt \"8:30\", ohne den Zusatz \"Uhr\"). Häufig handschriftlich und nicht " +
           "immer auf der dafür vorgesehenen Zeile - steht mitunter freihändig in der Nähe " +
-          "der Unterschrift/des Unterschriftsfelds. Dort gezielt mitsuchen.",
+          "der Unterschrift/des Unterschriftsfelds. Dort gezielt mitsuchen. WICHTIG: Die " +
+          "Abfahrtszeit liegt IMMER nach der Ankunftszeit - findest du zwei handschriftliche " +
+          "Uhrzeiten und ist nicht eindeutig, welche zu welchem Feld gehört, ordne die " +
+          "spätere Uhrzeit der Abfahrt zu.",
       },
       km: { type: "string", description: "Gefahrene Kilometer laut Frachtbrief, nur die Zahl." },
+      gefahrgutErkannt: {
+        type: "boolean",
+        description:
+          "true, wenn auf dem Dokument irgendein Hinweis auf Gefahrgut zu finden ist - z.B. " +
+          "ein Stempel, Aufdruck oder handschriftlicher Vermerk \"ADR\", \"Gefahrgut\", " +
+          "\"GGVS\"/\"GGVSEB\", \"Gefahrgutklasse\" oder eine UN-Nummer (z.B. \"UN 1203\", " +
+          "\"UN1830\"). Sonst false.",
+      },
       unsichereFelder: {
         type: "array",
         items: { type: "string" },
@@ -149,6 +163,7 @@ const EXTRACTION_TOOL = {
       "ankunft",
       "abfahrt",
       "km",
+      "gefahrgutErkannt",
       "unsichereFelder",
     ],
   },
