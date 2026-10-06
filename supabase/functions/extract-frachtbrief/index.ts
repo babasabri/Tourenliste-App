@@ -29,9 +29,11 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
-// Haiku 4.5: reicht für strukturierte Datenextraktion und ist bei den hier
-// anfallenden Mengen (~3000 Frachtbriefe/Jahr) deutlich günstiger als Sonnet.
-const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
+// Modelle in Reihenfolge der Präferenz. Handschrift (Kennzeichen, Uhrzeiten)
+// liest Sonnet deutlich zuverlässiger als Haiku - bei ~3000 Frachtbriefen/Jahr
+// bleiben die Mehrkosten gering. Fällt das erste Modell aus (unbekannt,
+// überlastet), wird automatisch das nächste versucht.
+const ANTHROPIC_MODELS = ["claude-sonnet-4-5", "claude-haiku-4-5-20251001"];
 const ANTHROPIC_VERSION = "2023-06-01";
 
 const CORS_HEADERS = {
@@ -223,43 +225,50 @@ Deno.serve(async (req: Request) => {
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: fileBase64 } }
     : { type: "image", source: { type: "base64", media_type: mediaType, data: fileBase64 } };
 
-  let anthropicRes: Response;
-  try {
-    anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": ANTHROPIC_VERSION,
-      },
-      body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
-        max_tokens: 1024,
-        system: SYSTEM_PROMPT,
-        tools: [EXTRACTION_TOOL],
-        tool_choice: { type: "tool", name: "frachtbrief_daten" },
-        messages: [
-          {
-            role: "user",
-            content: [
-              documentBlock,
-              {
-                type: "text",
-                text:
-                  plateList.length > 0
-                    ? "Lies diesen Frachtbrief aus und trage die Daten über frachtbrief_daten ein. " +
-                      "Bekannte Kennzeichen aus unserem Fuhrpark (nur zur Plausibilisierung für das " +
-                      "Feld \"lkw\" - trage das handschriftliche Kennzeichen exakt so ein, wie du es " +
-                      "liest, ohne es auf einen dieser Werte umzudeuten): " + plateList.join(", ")
-                    : "Lies diesen Frachtbrief aus und trage die Daten über frachtbrief_daten ein.",
-              },
-            ],
-          },
-        ],
-      }),
-    });
-  } catch (err) {
-    console.error("Netzwerkfehler beim Aufruf der Anthropic API:", err);
+  const userText =
+    plateList.length > 0
+      ? "Lies diesen Frachtbrief aus und trage die Daten über frachtbrief_daten ein. " +
+        "Bekannte Kennzeichen aus unserem Fuhrpark (nur zur Plausibilisierung für das " +
+        "Feld \"lkw\" - trage das handschriftliche Kennzeichen exakt so ein, wie du es " +
+        "liest, ohne es auf einen dieser Werte umzudeuten): " + plateList.join(", ")
+      : "Lies diesen Frachtbrief aus und trage die Daten über frachtbrief_daten ein.";
+
+  let anthropicRes: Response | null = null;
+  let usedModel = "";
+  for (let i = 0; i < ANTHROPIC_MODELS.length; i++) {
+    const model = ANTHROPIC_MODELS[i];
+    const isLast = i === ANTHROPIC_MODELS.length - 1;
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": ANTHROPIC_API_KEY,
+          "anthropic-version": ANTHROPIC_VERSION,
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 1024,
+          system: SYSTEM_PROMPT,
+          tools: [EXTRACTION_TOOL],
+          tool_choice: { type: "tool", name: "frachtbrief_daten" },
+          messages: [{ role: "user", content: [documentBlock, { type: "text", text: userText }] }],
+        }),
+      });
+      if (res.ok || isLast) {
+        anthropicRes = res;
+        usedModel = model;
+        break;
+      }
+      console.error(`Modell ${model} fehlgeschlagen (Status ${res.status}):`, await res.text());
+    } catch (err) {
+      console.error(`Netzwerkfehler bei Modell ${model}:`, err);
+      if (isLast) {
+        return jsonResponse({ error: "Texterkennung ist gerade nicht erreichbar. Bitte später erneut versuchen." }, 502);
+      }
+    }
+  }
+  if (!anthropicRes) {
     return jsonResponse({ error: "Texterkennung ist gerade nicht erreichbar. Bitte später erneut versuchen." }, 502);
   }
 
@@ -282,5 +291,5 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "Konnte keine Daten aus dem Frachtbrief extrahieren." }, 502);
   }
 
-  return jsonResponse({ data: toolUse.input });
+  return jsonResponse({ data: { ...toolUse.input, modell: usedModel } });
 });
