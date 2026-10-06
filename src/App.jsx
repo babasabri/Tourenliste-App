@@ -180,7 +180,17 @@ function matchFleetPlate(raw, fleet) {
   if (!raw) return null;
   const norm = (s) => String(s).toUpperCase().replace(/[\s-]/g, "");
   const target = norm(raw);
-  return fleet.find((f) => norm(f.plate) === target) || null;
+  const exact = fleet.find((f) => norm(f.plate) === target);
+  if (exact) return exact;
+  // Handschrift ist oft nur um ein Zeichen daneben (z. B. "B-CY 3555" statt
+  // "B-CY 3552"): gleich lange Kennzeichen mit genau einer abweichenden Stelle
+  // gelten als Treffer, aber nur wenn es dafür genau EINEN Kandidaten gibt -
+  // das Ergebnis wird als fuzzy markiert, damit die UI zur Prüfung auffordert.
+  const near = fleet.filter((f) => {
+    const p = norm(f.plate);
+    return p.length === target.length && [...p].filter((c, i) => c !== target[i]).length === 1;
+  });
+  return near.length === 1 ? { ...near[0], fuzzy: true } : null;
 }
 
 // Wandelt eine von der KI erkannte Uhrzeit in das von <input type="time">
@@ -190,7 +200,9 @@ function matchFleetPlate(raw, fleet) {
 // erwartete Format passte (z. B. "8:30" statt "08:30", oder "8.30 Uhr").
 function parseFrachtbriefZeit(raw) {
   if (!raw) return "";
-  const cleaned = String(raw).trim().toLowerCase().replace(/uhr/g, "").trim();
+  // Auch Schreibweisen wie "0850h", "08.50 h" oder "9:20h" (Fahrer hängen oft
+  // ein "h" an) - Zusatz "uhr"/"h" wird vor dem Muster-Abgleich entfernt.
+  const cleaned = String(raw).trim().toLowerCase().replace(/uhr/g, "").replace(/\s*h\.?$/, "").trim();
   let h, min;
   let m = cleaned.match(/^(\d{1,2})[:.,\s](\d{2})$/);
   if (m) {
@@ -1093,6 +1105,10 @@ export default function TourenApp() {
         setField("lkw", match.plate);
         const fahrer = driverForWeek(match.plate, datum || next.datum);
         if (fahrer) setField("fahrer", fahrer);
+        if (match.fuzzy) {
+          unsure.add("lkw");
+          lkwWarn = `Kennzeichen "${extracted.lkw}" gelesen - nächstliegender Fuhrpark-LKW "${match.plate}" gewählt (eine Stelle abweichend), bitte prüfen.`;
+        }
       } else {
         lkwWarn = `Kennzeichen "${extracted.lkw}" wurde nicht in den Stammdaten gefunden - bitte LKW manuell auswählen.`;
       }
