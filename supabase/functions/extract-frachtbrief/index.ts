@@ -80,10 +80,13 @@ const EXTRACTION_TOOL = {
           "der Seite. Suche also den GESAMTEN oberen Bereich des Dokuments gründlich nach " +
           "einer handschriftlichen Eintragung im Format eines deutschen Kfz-Kennzeichens ab " +
           "(1-3 Buchstaben, Bindestrich oder Leerzeichen, 1-2 Buchstaben, Leerzeichen, 1-4 " +
-          "Ziffern, z.B. \"OF-RY 800\", \"B-CY 3552\"). Falls eine Liste bekannter Kennzeichen " +
-          "mitgegeben wurde, prüfe gezielt, ob die handschriftliche Eintragung zu einem davon " +
-          "passt, auch wenn die Handschrift auf den ersten Blick uneindeutig ist - ordne ihr " +
-          "im Zweifel das ähnlichste bekannte Kennzeichen zu, statt mit leerem Feld zu melden. " +
+          "Ziffern, z.B. \"OF-RY 800\", \"B-CY 3552\"). Trage das Kennzeichen EXAKT so ein, wie " +
+          "du es handschriftlich liest (z.B. \"B-CY 3555\"). Falls eine Liste bekannter " +
+          "Kennzeichen mitgegeben wurde, dient sie nur zur Plausibilisierung: Weicht die " +
+          "Handschrift um höchstens ein Zeichen von einem bekannten Kennzeichen ab, trage trotzdem " +
+          "das tatsächlich gelesene ein (die App gleicht das selbst ab). NIEMALS auf ein bekanntes " +
+          "Kennzeichen umdeuten, das sich in Buchstaben oder mehreren Ziffern vom Gelesenen " +
+          "unterscheidet - lieber leer lassen und in unsichereFelder melden. " +
           "Nicht verwechseln mit dem Wert im Feld \"CHASSIS:\" weiter unten - das ist eine " +
           "andere, hier nicht benötigte Kennung (z.B. des Anhängers/Chassis) und darf " +
           "NIEMALS als Kennzeichen übernommen werden.",
@@ -118,7 +121,11 @@ const EXTRACTION_TOOL = {
         type: "string",
         description:
           "Ankunftszeit beim Kunden, Format HH:MM (24h, mit führender Null, z.B. \"08:30\" " +
-          "statt \"8:30\", ohne den Zusatz \"Uhr\"). Häufig handschriftlich ergänzt. WICHTIG: " +
+          "statt \"8:30\", ohne den Zusatz \"Uhr\"). Häufig handschriftlich ergänzt, typischerweise " +
+          "in einer handschriftlichen Zeile unterhalb des gedruckten Textblocks, oft zusammen mit " +
+          "dem Fahrernamen (z.B. \"0850h SERDAR     9:20\"): die ERSTE Uhrzeit links ist die " +
+          "Ankunft, die zweite weiter rechts die Abfahrt. Zahlen ohne Doppelpunkt sind Uhrzeiten, " +
+          "z.B. \"0850h\" = \"08:50\". WICHTIG: " +
           "Die Ankunftszeit liegt IMMER vor der Abfahrtszeit, niemals danach oder gleichzeitig " +
           "- findest du zwei handschriftliche Uhrzeiten und ist nicht eindeutig, welche zu " +
           "welchem Feld gehört, ordne die frühere Uhrzeit der Ankunft zu.",
@@ -129,7 +136,9 @@ const EXTRACTION_TOOL = {
           "Abfahrtszeit beim Kunden, Format HH:MM (24h, mit führender Null, z.B. \"08:30\" " +
           "statt \"8:30\", ohne den Zusatz \"Uhr\"). Häufig handschriftlich und nicht " +
           "immer auf der dafür vorgesehenen Zeile - steht mitunter freihändig in der Nähe " +
-          "der Unterschrift/des Unterschriftsfelds. Dort gezielt mitsuchen. WICHTIG: Die " +
+          "der Unterschrift/des Unterschriftsfelds, häufig in derselben handschriftlichen Zeile " +
+          "wie die Ankunft, weiter rechts davon (z.B. \"9:20\" nach \"0850h SERDAR\" = \"09:20\"). " +
+          "Dort gezielt mitsuchen. WICHTIG: Die " +
           "Abfahrtszeit liegt IMMER nach der Ankunftszeit - findest du zwei handschriftliche " +
           "Uhrzeiten und ist nicht eindeutig, welche zu welchem Feld gehört, ordne die " +
           "spätere Uhrzeit der Abfahrt zu.",
@@ -239,9 +248,9 @@ Deno.serve(async (req: Request) => {
                 text:
                   plateList.length > 0
                     ? "Lies diesen Frachtbrief aus und trage die Daten über frachtbrief_daten ein. " +
-                      "Bekannte Kennzeichen aus unserem Fuhrpark (für das Feld \"lkw\" - ordne das " +
-                      "handschriftlich eingetragene Kennzeichen, falls möglich, einem dieser Werte " +
-                      "zu): " + plateList.join(", ")
+                      "Bekannte Kennzeichen aus unserem Fuhrpark (nur zur Plausibilisierung für das " +
+                      "Feld \"lkw\" - trage das handschriftliche Kennzeichen exakt so ein, wie du es " +
+                      "liest, ohne es auf einen dieser Werte umzudeuten): " + plateList.join(", ")
                     : "Lies diesen Frachtbrief aus und trage die Daten über frachtbrief_daten ein.",
               },
             ],
