@@ -2838,14 +2838,14 @@ export default function TourenApp() {
               <table>
                 <thead>
                   <tr>
-                    <th>Datum</th><th>KW</th><th>LKW</th><th>Kunde</th><th>Container-Nr.</th><th>PLZ</th><th>Ort</th>
+                    <th>Datum</th><th>KW</th><th>LKW</th><th>Kunde</th><th>Auftrags-Nr.</th><th>Container-Nr.</th><th>PLZ</th><th>Ort</th>
                     {COSTFIELDS.map((k) => <th key={k} style={{ textAlign: "right" }}>{COSTFIELD_LABELS[k]}</th>)}
                     <th style={{ textAlign: "right" }}>Gesamt</th><th>Status</th><th>Gutschrift</th><th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {searchResults.length === 0 && (
-                    <tr><td colSpan={18} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>
+                    <tr><td colSpan={19} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>
                       {Object.values(search).some(Boolean) ? "Keine Treffer." : "Mindestens ein Suchfeld ausfüllen."}
                     </td></tr>
                   )}
@@ -2857,6 +2857,7 @@ export default function TourenApp() {
                         <td className="mono">{isoWeek(t.datum) ?? "–"}</td>
                         <td className="mono">{t.lkw}</td>
                         <td {...kundeCellProps(t)}>{t.kunde}</td>
+                        <td className="mono">{t.auftragsNr}</td>
                         <td className="mono">{t.containerNr}</td>
                         <td className="mono">{t.plz}</td>
                         <td>{t.ort}</td>
