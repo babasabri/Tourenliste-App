@@ -153,6 +153,12 @@ const SKIP_SUBSTRINGS = [
 
 const ORDER_RE = /^(\d{5,9})\s*\/\s*(\d+)\s+(.*?)\s{2,}(\d+)\s+(\S+)\s+(\S*")\s*$/;
 const COST_RE = /^(.*?)\s{2,}EUR\s+([\d.,]+)\s*$/;
+// Sonderfall: Bezeichnung und Betrag stehen auf zwei getrennten Zeilen (z. B.
+// "FD" allein in einer Zeile, der Betrag "EUR  50,00" in der Zeile darunter,
+// weil die Zelle vertikal versetzt gedruckt ist). Ohne diesen Fall fehlte der
+// Betrag und die Eigenkontrolle schlug fehl (Gutschrift 9324611624, Pos.
+// 3515959/2: 50,00 EUR "FD").
+const AMOUNT_ONLY_RE = /^EUR\s+([\d.,]+)\s*$/;
 
 // Parst die rekonstruierten Zeilen in Order-Blöcke. Gibt zusätzlich
 // belegNr, rgDatum und die vom Dokument selbst ausgewiesene Endsumme
@@ -166,11 +172,14 @@ function parseLines(lines) {
   let dokumentSumme = null;
   const positionen = [];
   let current = null;
+  let prevTrimmed = ""; // vorherige nicht-leere Zeile (für Betrag ohne Bezeichnung)
 
   for (const raw of lines) {
     const line = raw.replace(/\s+$/, "");
     const trimmed = line.trim();
     if (!trimmed) continue;
+    const before = prevTrimmed;
+    prevTrimmed = trimmed;
 
     if (line.includes("Beleg-Nr.:")) {
       const m = line.match(/Beleg-Nr\.:\s*(\d+)/);
@@ -202,6 +211,19 @@ function parseLines(lines) {
       const label = cm[1].replace(/\s+/g, " ").trim();
       const betrag = parseAmount(cm[2]);
       current.zeilen.push({ label, betrag, feld: kategorisiereKostenart(label) });
+      current.betrag = Math.round((current.betrag + betrag) * 100) / 100;
+      continue;
+    }
+
+    // Betrag ohne Bezeichnung in derselben Zeile: Bezeichnung steht in der
+    // Zeile davor - nur übernehmen, wenn sie eine bekannte Kostenart ist,
+    // sonst als "Sonstige" (der Betrag zählt in jedem Fall mit).
+    const am = trimmed.match(AMOUNT_ONLY_RE);
+    if (am && current) {
+      const betrag = parseAmount(am[1]);
+      const feld = kategorisiereKostenart(before);
+      const label = feld ? before : "(Bezeichnung nicht erkannt)";
+      current.zeilen.push({ label, betrag, feld });
       current.betrag = Math.round((current.betrag + betrag) * 100) / 100;
     }
   }
