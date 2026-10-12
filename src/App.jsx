@@ -7,7 +7,7 @@ import {
   LayoutDashboard, Truck, PlusCircle, Search as SearchIcon, Users,
   Fuel, X, Save, Trash2, Pencil, AlertTriangle, CalendarClock, Upload, ListChecks, RefreshCw,
   TrendingUp, MapPin, FileDown, FileText, FileSpreadsheet, FileScan, Loader2, Menu,
-  Receipt, CheckCircle2, HelpCircle,
+  Receipt, CheckCircle2, HelpCircle, Play,
 } from "lucide-react";
 import * as db from "./db";
 import { parseGutschriftPdf } from "./gutschriftParser";
@@ -107,7 +107,7 @@ const emptyForm = {
   datum: "", lkw: "", fahrer: "", auftragsNr: "", containerNr: "",
   kunde: "", plz: "", ort: "", ankunft: "", abfahrt: "", km: "",
   fracht: "", fd: "", adr: "", multistop: "", wartezeit: "", maut: "", diesel: "",
-  bemerkungen: "", status: "",
+  bemerkungen: "", status: "", andererAuftraggeber: false,
 };
 
 const COSTFIELDS = ["fracht", "fd", "adr", "multistop", "wartezeit", "maut", "diesel"];
@@ -115,6 +115,39 @@ const COSTFIELD_LABELS = {
   fracht: "Fracht", fd: "FD", adr: "ADR", multistop: "Multistop",
   wartezeit: "Wartezeit", maut: "Maut", diesel: "Diesel",
 };
+
+// "Anderer Auftraggeber" (Auftrag eines anderen Kunden, nicht Contargo): erfasst
+// werden nur Stammdaten, Auftrags-Nr. und Fracht. Diese Felder sind dann gesperrt
+// (und werden beim Speichern geleert), Container/Zeiten/KM sind keine Pflicht mehr.
+const ANDERER_GESPERRT = ["containerNr", "ankunft", "abfahrt", "km", "fd", "adr", "multistop", "wartezeit", "maut", "diesel"];
+const ANDERER_NICHT_PFLICHT = ["containerNr", "ankunft", "abfahrt", "km"];
+const OTHER_CLIENT_COLOR = "#1D4ED8";
+
+function lockStyle(locked) {
+  return locked ? { opacity: 0.5, cursor: "not-allowed", background: "#F1F3F5" } : undefined;
+}
+
+function clearLockedFields(t) {
+  const out = { ...t };
+  ANDERER_GESPERRT.forEach((k) => { out[k] = ""; });
+  return out;
+}
+
+// Schaltet "anderer Auftraggeber" um. Beim Einschalten werden gesperrte Felder
+// geleert; eine zuvor automatisch aus den KM berechnete Fracht (Contargo-Staffel)
+// passt nicht zu einem fremden Auftraggeber und wird ebenfalls entfernt.
+function toggleAnderer(f, checked) {
+  if (!checked) return { ...f, andererAuftraggeber: false };
+  const autoFracht = f.km !== "" && f.fracht !== "" && String(f.fracht) === String(calcFracht(f.km));
+  return { ...clearLockedFields(f), andererAuftraggeber: true, ...(autoFracht ? { fracht: "" } : {}) };
+}
+
+// Kunde-Zelle in den Tabellen: bei anderem Auftraggeber blau + Tooltip.
+function kundeCellProps(t) {
+  return t.andererAuftraggeber
+    ? { style: { color: OTHER_CLIENT_COLOR, fontWeight: 600 }, title: "Anderer Auftraggeber" }
+    : {};
+}
 
 // Pflichtfelder: eine Tour darf nur gespeichert werden, wenn all diese Felder
 // ausgefüllt sind. Kostenfelder (außer Fracht/Maut/Diesel, s. Vorschlagswerte)
@@ -136,6 +169,7 @@ const REQUIRED_FIELDS = [
 
 function getMissingFields(t) {
   return REQUIRED_FIELDS.filter(({ key }) => {
+    if (t.andererAuftraggeber && ANDERER_NICHT_PFLICHT.includes(key)) return false;
     const v = t[key];
     return v === undefined || v === null || String(v).trim() === "";
   }).map(({ key }) => key);
@@ -618,6 +652,9 @@ export default function TourenApp() {
   // den Hamburger-Button in der mobilen Kopfleiste ein-/ausgeblendet.
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
+  // "Neue Tour": Felder sind erst nach Klick auf "Tour erfassen starten" (oder
+  // nach einem Frachtbrief-Upload) aktiv.
+  const [tourStarted, setTourStarted] = useState(false);
   // Frachtbrief-Import (nur "Neue Tour"): fbLoading während des Auslesens,
   // fbError bei Fehlern, fbInfo = { filled: string[], unsure: Set<string>,
   // lkwWarn, timeWarn } solange zuletzt übernommene Werte noch nicht
@@ -1205,6 +1242,7 @@ export default function TourenApp() {
     const file = e.target.files && e.target.files[0];
     e.target.value = ""; // erlaubt erneuten Upload derselben/einer gleichnamigen Datei
     if (!file) return;
+    setTourStarted(true); // Upload startet die Erfassung automatisch
 
     const ALLOWED_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
     if (!ALLOWED_TYPES.includes(file.type)) {
@@ -1339,9 +1377,10 @@ export default function TourenApp() {
 
   function doSaveTour() {
     // Status kommt jetzt aus dem Formular (Pflichtfeld) statt fest auf "Offen".
-    const rec = { ...form, id: uid() };
+    const rec = form.andererAuftraggeber ? clearLockedFields({ ...form, id: uid() }) : { ...form, id: uid() };
     persistTours([rec, ...tours]);
     setForm(emptyForm);
+    setTourStarted(false);
     setFormErrors([]);
     setDupWarning(null);
     setFbInfo(null);
@@ -1354,6 +1393,7 @@ export default function TourenApp() {
   // einem versehentlichen Frachtbrief-Upload oder falscher Eingabe).
   function handleCancelNewTour() {
     setForm(emptyForm);
+    setTourStarted(false);
     setFormErrors([]);
     setDupWarning(null);
     setFbInfo(null);
@@ -1404,7 +1444,8 @@ export default function TourenApp() {
     }
     setEditErrors([]);
     setEditSaveNote("");
-    persistTours(tours.map((t) => (t.id === editId ? { ...editForm } : t)));
+    const toSave = editForm.andererAuftraggeber ? clearLockedFields(editForm) : { ...editForm };
+    persistTours(tours.map((t) => (t.id === editId ? toSave : t)));
     // Kam das Bearbeiten-Fenster aus der Gutschriften-Prüfliste, gilt die Zeile
     // mit dem Speichern als erledigt (bessere Übersicht - kein zusätzlicher
     // Klick auf "Erledigt" mehr nötig).
@@ -2108,7 +2149,7 @@ export default function TourenApp() {
                         <td className="mono">{isoWeek(t.datum) ?? "–"}</td>
                         <td className="mono">{t.lkw}</td>
                         <td>{t.fahrer}</td>
-                        <td>{t.kunde}</td>
+                        <td {...kundeCellProps(t)}>{t.kunde}</td>
                         <td className="mono">{t.auftragsNr}</td>
                         {COSTFIELDS.map((k) => (
                           <td key={k} className="mono" style={{ textAlign: "right" }}>{euro(t[k])}</td>
@@ -2192,7 +2233,7 @@ export default function TourenApp() {
                         <td className="mono">{isoWeek(t.datum) ?? "–"}</td>
                         <td className="mono">{t.lkw}</td>
                         <td>{t.fahrer}</td>
-                        <td>{t.kunde}</td>
+                        <td {...kundeCellProps(t)}>{t.kunde}</td>
                         <td className="mono">{t.auftragsNr}</td>
                         {COSTFIELDS.map((k) => (
                           <td key={k} className="mono" style={{ textAlign: "right" }}>{euro(t[k])}</td>
@@ -2408,19 +2449,32 @@ export default function TourenApp() {
           <div className="neue-tour-card" style={{ maxWidth: 640, flex: "1 1 480px", background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 24 }}>
             <div style={{ marginBottom: 18, padding: 14, background: fbInfo ? WARN_BG : BG, border: `1px dashed ${BORDER}`, borderRadius: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <button type="button" className="primary" disabled={tourStarted} onClick={() => setTourStarted(true)}
+                  style={tourStarted ? { opacity: 0.55, cursor: "default" } : undefined}>
+                  <Play size={14} /> {tourStarted ? "Erfassung läuft" : "Tour erfassen starten"}
+                </button>
                 <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: fbLoading ? "default" : "pointer", padding: "7px 12px", border: `1px solid ${BORDER}`, borderRadius: 8, background: CARD, fontSize: 13, fontWeight: 500, opacity: fbLoading ? 0.6 : 1 }}>
                   {fbLoading ? <Loader2 size={14} /> : <FileScan size={14} />}
                   {fbLoading ? "Wird ausgelesen …" : "Frachtbrief hochladen"}
                   <input type="file" accept="application/pdf,image/jpeg,image/png,image/webp,image/heic,image/heif"
                     style={{ display: "none" }} onChange={handleFrachtbriefUpload} disabled={fbLoading} />
                 </label>
-                <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>PDF oder Foto - füllt das Formular automatisch aus</span>
+                <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>{tourStarted ? "PDF oder Foto - füllt das Formular automatisch aus" : "Erst \"Tour erfassen starten\" klicken - oder direkt einen Frachtbrief hochladen"}</span>
                 {fbInfo && (
                   <button type="button" className="ghost" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => setFbInfo(null)}>
                     <X size={12} /> Hinweis ausblenden
                   </button>
                 )}
               </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, marginBottom: 0, fontSize: 13, color: tourStarted ? TEXT : TEXT_MUTED, cursor: tourStarted ? "pointer" : "default" }}>
+                <input type="checkbox" style={{ width: "auto", margin: 0 }} checked={!!form.andererAuftraggeber} disabled={!tourStarted}
+                  onChange={(e) => {
+                    setForm(toggleAnderer(form, e.target.checked));
+                    if (e.target.checked) setFormErrors(formErrors.filter((k) => !ANDERER_NICHT_PFLICHT.includes(k)));
+                  }} />
+                <span style={{ fontWeight: 500 }}>Anderer Auftraggeber</span>
+                <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>· nur Fracht erfassen (Container, Zeiten, KM und übrige Kosten gesperrt)</span>
+              </label>
               {fbError && <div style={{ marginTop: 10, fontSize: 12.5, color: DANGER }}>{fbError}</div>}
               {fbInfo && (
                 <div style={{ marginTop: 10, fontSize: 12.5, color: AMBER_DARK }}>
@@ -2434,6 +2488,7 @@ export default function TourenApp() {
                 </div>
               )}
             </div>
+            <fieldset disabled={!tourStarted} style={{ border: 0, padding: 0, margin: 0, minWidth: 0, opacity: tourStarted ? 1 : 0.5 }}>
             <div className="neue-tour-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
               <div>
                 <label>Datum *</label>
@@ -2462,8 +2517,8 @@ export default function TourenApp() {
                   onChange={(e) => { setForm({ ...form, auftragsNr: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "auftragsNr")); clearFbFlag("auftragsNr"); }} />
               </div>
               <div>
-                <label>Container-Nr. *</label>
-                <input value={form.containerNr} style={fbFieldStyle("containerNr", fbInfo, formErrors)}
+                <label>Container-Nr.{!form.andererAuftraggeber && " *"}</label>
+                <input value={form.containerNr} disabled={form.andererAuftraggeber} style={{ ...fbFieldStyle("containerNr", fbInfo, formErrors), ...lockStyle(form.andererAuftraggeber) }}
                   onChange={(e) => { setForm({ ...form, containerNr: e.target.value.toUpperCase() }); setFormErrors(formErrors.filter((k) => k !== "containerNr")); clearFbFlag("containerNr"); }}
                   onBlur={() => setForm({ ...form, containerNr: normalizeContainerNr(form.containerNr) })} />
               </div>
@@ -2478,7 +2533,7 @@ export default function TourenApp() {
                     setForm({
                       ...form, kunde: c.name,
                       plz: c.plz || form.plz, ort: c.ort || form.ort,
-                      ...(c.defaultMaut !== "" && c.defaultMaut !== null ? { maut: c.defaultMaut } : {}),
+                      ...(!form.andererAuftraggeber && c.defaultMaut !== "" && c.defaultMaut !== null ? { maut: c.defaultMaut } : {}),
                     });
                     setFormErrors(formErrors.filter((k) => !["kunde", "plz", "ort"].includes(k)));
                     clearFbFlag("kunde"); clearFbFlag("plz"); clearFbFlag("ort");
@@ -2496,18 +2551,18 @@ export default function TourenApp() {
                   onChange={(e) => { setForm({ ...form, ort: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "ort")); clearFbFlag("ort"); }} />
               </div>
               <div>
-                <label>Ankunft *</label>
-                <input type="time" value={form.ankunft} style={fbFieldStyle("ankunft", fbInfo, formErrors)}
+                <label>Ankunft{!form.andererAuftraggeber && " *"}</label>
+                <input type="time" value={form.ankunft} disabled={form.andererAuftraggeber} style={{ ...fbFieldStyle("ankunft", fbInfo, formErrors), ...lockStyle(form.andererAuftraggeber) }}
                   onChange={(e) => { setForm({ ...form, ankunft: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "ankunft")); clearFbFlag("ankunft"); }} />
               </div>
               <div>
-                <label>Abfahrt *</label>
-                <input type="time" value={form.abfahrt} style={fbFieldStyle("abfahrt", fbInfo, formErrors)}
+                <label>Abfahrt{!form.andererAuftraggeber && " *"}</label>
+                <input type="time" value={form.abfahrt} disabled={form.andererAuftraggeber} style={{ ...fbFieldStyle("abfahrt", fbInfo, formErrors), ...lockStyle(form.andererAuftraggeber) }}
                   onChange={(e) => { setForm({ ...form, abfahrt: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "abfahrt")); clearFbFlag("abfahrt"); }} />
               </div>
               <div>
-                <label>Abrechnungs-KM *</label>
-                <input type="number" value={form.km} style={fbFieldStyle("km", fbInfo, formErrors)}
+                <label>Abrechnungs-KM{!form.andererAuftraggeber && " *"}</label>
+                <input type="number" value={form.km} disabled={form.andererAuftraggeber} style={{ ...fbFieldStyle("km", fbInfo, formErrors), ...lockStyle(form.andererAuftraggeber) }}
                   onChange={(e) => {
                     const km = e.target.value;
                     const fracht = calcFracht(km);
@@ -2526,18 +2581,21 @@ export default function TourenApp() {
                 ["wartezeit", "Wartezeit (€)", null],
                 ["maut", "Maut (€)", null],
                 ["diesel", "Diesel (€)", "automatisch aus Diesel-Index"],
-              ].map(([key, lbl, hint]) => (
+              ].map(([key, lbl, hint]) => {
+                const locked = form.andererAuftraggeber && ANDERER_GESPERRT.includes(key);
+                return (
                 <div key={key}>
                   <label>
                     {lbl}
-                    {hint && <span style={{ color: TEXT_MUTED }}> · {hint}</span>}
+                    {hint && !form.andererAuftraggeber && <span style={{ color: TEXT_MUTED }}> · {hint}</span>}
                     {key === "maut" && lastTour && lastTour.maut !== undefined && lastTour.maut !== "" && (
                       <span style={{ color: TEXT_MUTED }}> · Vorschlag: {euro(lastTour.maut)}</span>
                     )}
                   </label>
-                  <input type="number" value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} />
+                  <input type="number" value={form[key]} disabled={locked} style={lockStyle(locked)} onChange={(e) => setForm({ ...form, [key]: e.target.value })} />
                 </div>
-              ))}
+                );
+              })}
 
               <div style={{ gridColumn: "1 / -1" }}>
                 <label>Bemerkungen</label>
@@ -2553,6 +2611,7 @@ export default function TourenApp() {
                 </select>
               </div>
             </div>
+            </fieldset>
 
             <div style={{ marginTop: 18, background: BG, borderRadius: 8, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ fontSize: 13, fontWeight: 500, color: TEXT_MUTED }}>Gesamtsumme</span>
@@ -2560,7 +2619,7 @@ export default function TourenApp() {
             </div>
 
             <div style={{ marginTop: 18, display: "flex", alignItems: "center", gap: 14 }}>
-              <button className="primary" onClick={handleSave}><Save size={15} /> Tour speichern</button>
+              <button className="primary" disabled={!tourStarted} style={!tourStarted ? { opacity: 0.5, cursor: "default" } : undefined} onClick={handleSave}><Save size={15} /> Tour speichern</button>
               <button type="button" className="ghost" onClick={handleCancelNewTour}><X size={15} /> Abbrechen</button>
               {saveNote && <span style={{ fontSize: 12.5, color: formErrors.length > 0 ? DANGER : SUCCESS }}>{saveNote}</span>}
             </div>
@@ -2714,7 +2773,7 @@ export default function TourenApp() {
                         <td className="mono">{formatDateDMY(t.datum)}</td>
                         <td className="mono">{isoWeek(t.datum) ?? "–"}</td>
                         <td className="mono">{t.lkw}</td>
-                        <td>{t.kunde}</td>
+                        <td {...kundeCellProps(t)}>{t.kunde}</td>
                         <td className="mono">{t.containerNr}</td>
                         <td className="mono">{t.plz}</td>
                         <td>{t.ort}</td>
@@ -3031,7 +3090,7 @@ export default function TourenApp() {
                                 <tr key={t.id} onDoubleClick={() => openEdit(t)} style={{ cursor: "pointer", background: sc.bg }} title="Doppelklick zum Bearbeiten">
                                   <td className="mono" style={{ whiteSpace: "nowrap" }}>{formatDateDMY(t.datum)}</td>
                                   <td className="ellipsis" style={ellipsisCell} title={t.fahrer}>{t.fahrer}</td>
-                                  <td className="ellipsis" style={ellipsisCell} title={t.kunde}>{t.kunde}</td>
+                                  <td className="ellipsis" style={{ ...ellipsisCell, ...(t.andererAuftraggeber ? { color: OTHER_CLIENT_COLOR, fontWeight: 600 } : {}) }} title={t.andererAuftraggeber ? `${t.kunde} (anderer Auftraggeber)` : t.kunde}>{t.kunde}</td>
                                   <td className="mono ellipsis" style={ellipsisCell} title={t.auftragsNr}>{t.auftragsNr}</td>
                                   <td className="mono" style={{ whiteSpace: "nowrap" }}>{t.ankunft}</td>
                                   <td className="mono" style={{ whiteSpace: "nowrap" }}>{t.abfahrt}</td>
@@ -3400,6 +3459,15 @@ export default function TourenApp() {
                 {editForm.gutschriftDatum ? ` vom ${formatDateDMY(editForm.gutschriftDatum)}` : ""}
               </div>
             )}
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, fontSize: 13, color: TEXT, cursor: "pointer" }}>
+              <input type="checkbox" style={{ width: "auto", margin: 0 }} checked={!!editForm.andererAuftraggeber}
+                onChange={(e) => {
+                  setEditForm(toggleAnderer(editForm, e.target.checked));
+                  if (e.target.checked) setEditErrors(editErrors.filter((k) => !ANDERER_NICHT_PFLICHT.includes(k)));
+                }} />
+              <span style={{ fontWeight: 500 }}>Anderer Auftraggeber</span>
+              <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>· nur Fracht erfassen</span>
+            </label>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <div><label>Datum *</label>
                 <input type="date" value={editForm.datum} style={fieldStyle("datum", editErrors)}
@@ -3428,8 +3496,8 @@ export default function TourenApp() {
                 <input value={editForm.auftragsNr} style={fieldStyle("auftragsNr", editErrors)}
                   onChange={(e) => { setEditForm({ ...editForm, auftragsNr: e.target.value }); setEditErrors(editErrors.filter((k) => k !== "auftragsNr")); }} />
               </div>
-              <div><label>Container-Nr. *</label>
-                <input value={editForm.containerNr} style={fieldStyle("containerNr", editErrors)}
+              <div><label>Container-Nr.{!editForm.andererAuftraggeber && " *"}</label>
+                <input value={editForm.containerNr} disabled={editForm.andererAuftraggeber} style={{ ...fieldStyle("containerNr", editErrors), ...lockStyle(editForm.andererAuftraggeber) }}
                   onChange={(e) => { setEditForm({ ...editForm, containerNr: e.target.value.toUpperCase() }); setEditErrors(editErrors.filter((k) => k !== "containerNr")); }}
                   onBlur={() => setEditForm({ ...editForm, containerNr: normalizeContainerNr(editForm.containerNr) })} />
               </div>
@@ -3443,7 +3511,7 @@ export default function TourenApp() {
                     setEditForm({
                       ...editForm, kunde: c.name,
                       plz: c.plz || editForm.plz, ort: c.ort || editForm.ort,
-                      ...(c.defaultMaut !== "" && c.defaultMaut !== null ? { maut: c.defaultMaut } : {}),
+                      ...(!editForm.andererAuftraggeber && c.defaultMaut !== "" && c.defaultMaut !== null ? { maut: c.defaultMaut } : {}),
                     });
                     setEditErrors(editErrors.filter((k) => !["kunde", "plz", "ort"].includes(k)));
                   }}
@@ -3457,16 +3525,16 @@ export default function TourenApp() {
                 <input value={editForm.ort} style={fieldStyle("ort", editErrors)}
                   onChange={(e) => { setEditForm({ ...editForm, ort: e.target.value }); setEditErrors(editErrors.filter((k) => k !== "ort")); }} />
               </div>
-              <div><label>Ankunft *</label>
-                <input type="time" value={editForm.ankunft} style={fieldStyle("ankunft", editErrors)}
+              <div><label>Ankunft{!editForm.andererAuftraggeber && " *"}</label>
+                <input type="time" value={editForm.ankunft} disabled={editForm.andererAuftraggeber} style={{ ...fieldStyle("ankunft", editErrors), ...lockStyle(editForm.andererAuftraggeber) }}
                   onChange={(e) => { setEditForm({ ...editForm, ankunft: e.target.value }); setEditErrors(editErrors.filter((k) => k !== "ankunft")); }} />
               </div>
-              <div><label>Abfahrt *</label>
-                <input type="time" value={editForm.abfahrt} style={fieldStyle("abfahrt", editErrors)}
+              <div><label>Abfahrt{!editForm.andererAuftraggeber && " *"}</label>
+                <input type="time" value={editForm.abfahrt} disabled={editForm.andererAuftraggeber} style={{ ...fieldStyle("abfahrt", editErrors), ...lockStyle(editForm.andererAuftraggeber) }}
                   onChange={(e) => { setEditForm({ ...editForm, abfahrt: e.target.value }); setEditErrors(editErrors.filter((k) => k !== "abfahrt")); }} />
               </div>
-              <div><label>Abrechnungs-KM *</label>
-                <input type="number" value={editForm.km} style={fieldStyle("km", editErrors)}
+              <div><label>Abrechnungs-KM{!editForm.andererAuftraggeber && " *"}</label>
+                <input type="number" value={editForm.km} disabled={editForm.andererAuftraggeber} style={{ ...fieldStyle("km", editErrors), ...lockStyle(editForm.andererAuftraggeber) }}
                   onChange={(e) => {
                     const km = e.target.value;
                     const fracht = calcFracht(km);
@@ -3475,15 +3543,18 @@ export default function TourenApp() {
                     setEditErrors(editErrors.filter((k) => k !== "km"));
                   }} />
               </div>
-              {COSTFIELDS.map((k) => (
+              {COSTFIELDS.map((k) => {
+                const locked = editForm.andererAuftraggeber && ANDERER_GESPERRT.includes(k);
+                return (
                 <div key={k}>
                   <label>
                     {COSTFIELD_LABELS[k]}
-                    {(k === "fracht" || k === "diesel") && <span style={{ color: TEXT_MUTED }}> · automatisch berechnet</span>}
+                    {(k === "fracht" || k === "diesel") && !editForm.andererAuftraggeber && <span style={{ color: TEXT_MUTED }}> · automatisch berechnet</span>}
                   </label>
-                  <input type="number" value={editForm[k]} onChange={(e) => setEditForm({ ...editForm, [k]: e.target.value })} />
+                  <input type="number" value={editForm[k]} disabled={locked} style={lockStyle(locked)} onChange={(e) => setEditForm({ ...editForm, [k]: e.target.value })} />
                 </div>
-              ))}
+                );
+              })}
               <div style={{ gridColumn: "1 / -1" }}><label>Bemerkungen</label><textarea rows={2} value={editForm.bemerkungen} onChange={(e) => setEditForm({ ...editForm, bemerkungen: e.target.value })} /></div>
               <div style={{ gridColumn: "1 / -1" }}>
                 <label>Status *</label>
