@@ -56,6 +56,7 @@ const tourToDb = (t) => ({
   diesel: emptyToZero(t.diesel),
   bemerkungen: t.bemerkungen || "",
   status: emptyToNull(t.status),
+  anderer_auftraggeber: !!t.andererAuftraggeber,
 });
 
 const tourFromDb = (r) => ({
@@ -80,6 +81,7 @@ const tourFromDb = (r) => ({
   diesel: nullToEmpty(r.diesel),
   bemerkungen: nullToEmpty(r.bemerkungen),
   status: nullToEmpty(r.status),
+  andererAuftraggeber: !!r.anderer_auftraggeber,
   // Werden nur vom Gutschriften-Abgleich automatisch gesetzt (siehe
   // gutschrift_apply_import) - hier rein lesend für die Anzeige, es gibt
   // bewusst kein Formularfeld dafür. tourToDb() sendet diese Felder nicht
