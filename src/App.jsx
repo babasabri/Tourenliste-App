@@ -1350,6 +1350,29 @@ export default function TourenApp() {
     }
   }
 
+  // Öffnet die zur Vorschau-Zeile (vor "Übernehmen") gefundene Tour im normalen
+  // Bearbeiten-Modal. Nach dem Speichern wird die Vorschau neu abgeglichen
+  // (refreshGsPreview), damit Betrag/Differenz/Status aktuell bleiben.
+  function openEditFromPreview(p) {
+    if (!p.tourId) return;
+    const tour = tours.find((t) => t.id === p.tourId);
+    if (!tour) {
+      setGsError("Tour nicht gefunden (evtl. inzwischen gelöscht) - bitte über Suche prüfen.");
+      return;
+    }
+    openEdit(tour);
+  }
+
+  // Gleicht die Positionen der Gutschrift-Vorschau erneut gegen die aktuellen
+  // Touren ab (z. B. nach einer Korrektur über das Bearbeiten-Fenster).
+  async function refreshGsPreview() {
+    if (!gsPreview) return;
+    try {
+      const matched = await db.matchGutschriftPositionen(gsPreview.positionen);
+      setGsPreview((prev) => (prev ? { ...prev, positionen: matched } : prev));
+    } catch { /* Vorschau bleibt dann einfach auf altem Stand */ }
+  }
+
   async function handleGutschriftErledigt(id) {
     try {
       setGsReview(await db.markGutschriftPositionErledigt(id));
@@ -1445,7 +1468,8 @@ export default function TourenApp() {
     setEditErrors([]);
     setEditSaveNote("");
     const toSave = editForm.andererAuftraggeber ? clearLockedFields(editForm) : { ...editForm };
-    persistTours(tours.map((t) => (t.id === editId ? toSave : t)));
+    const saving = persistTours(tours.map((t) => (t.id === editId ? toSave : t)));
+    if (gsPreview) saving.then(refreshGsPreview);
     // Kam das Bearbeiten-Fenster aus der Gutschriften-Prüfliste, gilt die Zeile
     // mit dem Speichern als erledigt (bessere Übersicht - kein zusätzlicher
     // Klick auf "Erledigt" mehr nötig).
@@ -1458,7 +1482,8 @@ export default function TourenApp() {
   }
 
   function deleteTour(id) {
-    persistTours(tours.filter((t) => t.id !== id));
+    const deleting = persistTours(tours.filter((t) => t.id !== id));
+    if (gsPreview) deleting.then(refreshGsPreview);
     setEditId(null);
     setEditForm(null);
     setEditFromGutschriftId(null);
@@ -1727,6 +1752,24 @@ export default function TourenApp() {
     return map;
   }, [einsatz, fleet, dashFilters]);
 
+  // Gesamt-KM im Dashboard-Zeitraum (Summe der Wochen-KM aller LKW laut
+  // Einsatzplan) + Umsatz pro KM, wie in der Excel-Dashboard-Kopfzeile.
+  const gefahreneKm = useMemo(
+    () => Object.values(periodKmPerLkw).reduce((s, v) => s + (Number(v) || 0), 0),
+    [periodKmPerLkw]
+  );
+
+  // Tourenstatus-Leiste (Offen / Reklamiert / Abgerechnet): Anzahl + Summe je
+  // Status, respektiert alle Dashboard-Filter (anders als reklamationStats, das
+  // immer alle Touren zählt).
+  const dashStatusStats = useMemo(() => {
+    const build = (status) => {
+      const m = dashTours.filter((t) => t.status === status);
+      return { anzahl: m.length, summe: m.reduce((s, t) => s + gesamt(t), 0) };
+    };
+    return { offen: build("Offen"), reklamiert: build("Reklamiert"), abgerechnet: build("Abgerechnet") };
+  }, [dashTours]);
+
   // Beschriftung der KM-Spalte im LKW-Ranking, passend zur gröbsten aktuell
   // gesetzten Zeitfilterung (Woche vor Monat vor Jahr vor eigenem Zeitraum),
   // damit auf einen Blick klar ist, worauf sich die angezeigte KM-Zahl bezieht.
@@ -1867,6 +1910,8 @@ export default function TourenApp() {
             display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 40;
           }
           .neue-tour-grid { grid-template-columns: 1fr !important; }
+          .dash-kpi-grid { grid-template-columns: repeat(2, 1fr) !important; }
+          .dash-status-grid { grid-template-columns: 1fr !important; }
           .neue-tour-card { max-width: 100% !important; flex-basis: 100% !important; }
         }
       `}</style>
@@ -1993,23 +2038,51 @@ export default function TourenApp() {
               </button>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 14, marginBottom: 24 }}>
+            <div className="dash-kpi-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 14, marginBottom: 16 }}>
               {[
                 { label: "Umsatz", val: euro(kpi.umsatz) },
-                { label: "Touren", val: kpi.anzahl },
-                { label: "Einsatztage", val: kpi.einsatztage },
-                { label: "Ø pro Einsatztag", val: euro(kpi.avg) },
-                { label: "Offen / Reklamiert", val: `${kpi.offen} / ${kpi.reklamiert}` },
+                { label: "Umsatz / km", val: gefahreneKm > 0 ? `${euro(kpi.umsatz / gefahreneKm)}/km` : "–" },
+                { label: "Gefahrene km", val: `${Math.round(gefahreneKm).toLocaleString("de-DE")} km` },
+                { label: "Touren", val: kpi.anzahl.toLocaleString("de-DE") },
+                { label: "Ø Umsatz / Einsatztag", val: euro(kpi.avg), sub: `${kpi.einsatztage.toLocaleString("de-DE")} Einsatztage` },
               ].map((k) => (
                 <div key={k.label} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
                   <div style={{ background: MARINE, color: AMBER, fontSize: 11, fontWeight: 600, padding: "8px 14px" }}>
                     {k.label.toUpperCase()}
                   </div>
-                  <div className="mono" style={{ fontSize: 22, fontWeight: 600, padding: "14px 14px", color: MARINE }}>
+                  <div className="mono" style={{ fontSize: 22, fontWeight: 600, padding: k.sub ? "14px 14px 4px" : "14px 14px", color: MARINE }}>
                     {k.val}
                   </div>
+                  {k.sub && (
+                    <div style={{ fontSize: 11, color: TEXT_MUTED, padding: "0 14px 10px" }}>{k.sub}</div>
+                  )}
                 </div>
               ))}
+            </div>
+
+            {/* Tourenstatus wie im Excel-Dashboard: Anzahl + Summe je Status
+                (Farben = Status-Farben aus den KW-Blättern). */}
+            <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden", marginBottom: 24 }}>
+              <div style={{ background: MARINE, color: AMBER, fontSize: 11, fontWeight: 600, padding: "8px 14px" }}>
+                TOURENSTATUS
+              </div>
+              <div className="dash-status-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)" }}>
+                {[
+                  { label: "Offen", stat: dashStatusStats.offen, bg: "#FFFF99", text: "#6B5900" },
+                  { label: "Reklamiert", stat: dashStatusStats.reklamiert, bg: "#FF9966", text: "#7A2E00" },
+                  { label: "Abgerechnet", stat: dashStatusStats.abgerechnet, bg: "#99FF99", text: "#1B5E20" },
+                ].map((s) => (
+                  <div key={s.label}>
+                    <div style={{ background: s.bg, color: s.text, fontSize: 12, fontWeight: 700, textAlign: "center", padding: "6px 10px" }}>
+                      {s.label.toUpperCase()}
+                    </div>
+                    <div className="mono" style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "12px 16px", fontSize: 15, fontWeight: 600, color: MARINE }}>
+                      <span>{s.stat.anzahl.toLocaleString("de-DE")} Touren</span>
+                      <span>{euro(s.stat.summe)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16, marginBottom: 16 }}>
@@ -2348,12 +2421,15 @@ export default function TourenApp() {
                             <th style={{ textAlign: "right" }}>Betrag Gutschrift</th>
                             <th style={{ textAlign: "right" }}>Betrag Tour</th>
                             <th style={{ textAlign: "right" }}>Differenz</th>
-                            <th>Hinweis</th>
+                            <th>Hinweis</th><th></th>
                           </tr>
                         </thead>
                         <tbody>
                           {pos.map((p, i) => (
-                            <tr key={i}>
+                            <tr key={i}
+                              onDoubleClick={() => openEditFromPreview(p)}
+                              style={p.tourId ? { cursor: "pointer" } : undefined}
+                              title={p.tourId ? "Doppelklick zum Bearbeiten der Tour" : undefined}>
                               <td><GutschriftStatusBadge status={p.status} /></td>
                               <td className="mono">{p.orderNr}</td>
                               <td>{p.kunde}</td>
@@ -2365,6 +2441,13 @@ export default function TourenApp() {
                               <td style={{ fontSize: 11.5, color: TEXT_MUTED }}>
                                 {p.status === "mehrdeutig" && `${p.kandidatenAnzahl} offene Touren mit dieser Nr. - bitte manuell prüfen`}
                                 {p.status === "nicht_gefunden" && "Keine offene Tour mit dieser Auftragsnummer gefunden"}
+                              </td>
+                              <td>
+                                {p.tourId && (
+                                  <button className="ghost" style={{ padding: "4px 8px" }} onClick={() => openEditFromPreview(p)} title="Tour bearbeiten">
+                                    <Pencil size={13} />
+                                  </button>
+                                )}
                               </td>
                             </tr>
                           ))}
