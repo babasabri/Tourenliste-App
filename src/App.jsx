@@ -730,6 +730,10 @@ export default function TourenApp() {
   const [epDraft, setEpDraft] = useState({});
   const [epDirty, setEpDirty] = useState(false);
   const [epSaving, setEpSaving] = useState(false);
+  // routecontrol-Abgleich (Tachostände per CAN-Bus, Edge Function routecontrol-sync)
+  const [rcSyncing, setRcSyncing] = useState(false);
+  const [rcMsg, setRcMsg] = useState(null); // { type: "ok" | "error", text }
+  const [rcLast, setRcLast] = useState(null); // letzter Eintrag aus routecontrol_sync_log
   // Export-Tab: nutzt dieselbe Wochenauswahl (epJahr/epKw) wie Einsatzplan/
   // Wochen-Kontrolle. Eigene Lade-/Fehlerzustände je Format, da der Excel-
   // Export asynchron läuft (ExcelJS) und beide unabhängig fehlschlagen können.
@@ -793,6 +797,12 @@ export default function TourenApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [epJahr, epKw, fleet]);
 
+  // Letzten routecontrol-Abgleich laden, sobald der Einsatzplan geöffnet wird.
+  useEffect(() => {
+    if (tab !== "einsatz") return;
+    db.fetchLastRoutecontrolSync().then(setRcLast).catch(() => {});
+  }, [tab]);
+
   // Prüfliste (offene Gutschrift-Differenzen) beim ersten Öffnen des Tabs laden.
   useEffect(() => {
     if (tab === "gutschriften") loadGutschriftReview();
@@ -824,6 +834,47 @@ export default function TourenApp() {
       setStorageError("Speichern fehlgeschlagen. Bitte erneut versuchen.");
     } finally {
       setEpSaving(false);
+    }
+  }
+
+  // Holt die Tachostände der angezeigten Woche aus routecontrol und trägt sie
+  // als Ende-KM ein (serverseitig). Danach Einsatzplan neu laden und den
+  // Entwurf der Woche mit den frischen Werten neu aufbauen.
+  async function syncKmFromRoutecontrol() {
+    if (epDirty) {
+      setRcMsg({ type: "error", text: "Bitte erst die ungespeicherten Änderungen speichern." });
+      return;
+    }
+    setRcSyncing(true);
+    setRcMsg(null);
+    try {
+      const res = await db.syncRoutecontrolKm(epJahr, epKw);
+      const fresh = await db.fetchEinsatzplan();
+      setEinsatz(fresh);
+      const next = {};
+      fleet.forEach((f) => {
+        const rec = fresh.find((e) => e.jahr === epJahr && e.kw === epKw && e.lkw === f.plate);
+        next[f.plate] = {
+          fahrer: rec ? rec.fahrer : "",
+          status: rec ? rec.status : "Aktiv",
+          endKm: rec && rec.endKm !== undefined ? rec.endKm : "",
+        };
+      });
+      setEpDraft(next);
+      setEpDirty(false);
+      const erg = (res && res.ergebnis) || [];
+      const geaendert = erg.filter((e) => e.aktion === "aktualisiert" || e.aktion === "Zeile angelegt").length;
+      const ohneFahrt = erg.filter((e) => String(e.aktion || "").startsWith("keine Fahrten")).length;
+      let text = geaendert > 0
+        ? `${geaendert} KM-Stand${geaendert === 1 ? "" : "e"} aus routecontrol übernommen.`
+        : "Alle KM-Stände sind bereits aktuell.";
+      if (ohneFahrt > 0) text += ` ${ohneFahrt} LKW ohne Fahrten in dieser Woche (unverändert).`;
+      setRcMsg({ type: "ok", text });
+    } catch (e) {
+      setRcMsg({ type: "error", text: "routecontrol-Abruf fehlgeschlagen: " + e.message });
+    } finally {
+      setRcSyncing(false);
+      db.fetchLastRoutecontrolSync().then(setRcLast).catch(() => {});
     }
   }
 
@@ -2922,6 +2973,12 @@ export default function TourenApp() {
                 style={!epDirty || epSaving ? { opacity: 0.5, cursor: "default" } : undefined}>
                 <Save size={14} /> {epSaving ? "Speichert …" : "Speichern"}
               </button>
+              <button className="ghost" disabled={rcSyncing} onClick={syncKmFromRoutecontrol}
+                title="Tachostände dieser Woche aus routecontrol abrufen und als Ende-KM eintragen"
+                style={rcSyncing ? { opacity: 0.6, cursor: "default" } : undefined}>
+                {rcSyncing ? <Loader2 size={14} /> : <RefreshCw size={14} />}{" "}
+                {rcSyncing ? "Hole KM-Stände …" : "KM aus routecontrol holen"}
+              </button>
               {epDirty && !epSaving && (
                 <span style={{ fontSize: 12, color: AMBER_DARK, fontWeight: 500 }}>
                   Ungespeicherte Änderungen – bitte speichern, bevor du die Woche wechselst.
@@ -2946,6 +3003,24 @@ export default function TourenApp() {
                 </div>
               )}
             </div>
+
+            {(rcMsg || rcLast) && (
+              <div style={{ fontSize: 12.5, marginTop: -6, marginBottom: 14, display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
+                {rcMsg && (
+                  <span style={{ color: rcMsg.type === "ok" ? "#1E7B3C" : "#B42318", fontWeight: 500 }}>
+                    {rcMsg.text}
+                  </span>
+                )}
+                {rcLast && (
+                  <span style={{ color: TEXT_MUTED }}>
+                    Letzter routecontrol-Abgleich:{" "}
+                    {new Date(rcLast.created_at).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })} Uhr
+                    {" "}({rcLast.ausloeser === "zeitplan" ? "automatisch" : "manuell"})
+                    {rcLast.ok ? " ✓" : <span style={{ color: "#B42318" }}> – fehlgeschlagen{rcLast.fehler ? `: ${rcLast.fehler}` : ""}</span>}
+                  </span>
+                )}
+              </div>
+            )}
 
             {fleet.length === 0 && (
               <div style={{ fontSize: 13, color: TEXT_MUTED }}>Erst unter "Stammdaten" Fahrzeuge anlegen.</div>
@@ -3008,6 +3083,8 @@ export default function TourenApp() {
             )}
             <div style={{ fontSize: 12, color: TEXT_MUTED, marginTop: 12, marginBottom: 24 }}>
               Änderungen an Fahrer, Status oder Ende-KM werden erst mit Klick auf "Speichern" übernommen.
+              Die Ende-KM werden jeden Abend um 23:59 Uhr automatisch aus routecontrol (Tachostand) übernommen –
+              mit "KM aus routecontrol holen" jederzeit auch sofort für die angezeigte Woche.
               Bleibt das Fahrer-Feld leer, greift in "Neue Tour" der Standard-Fahrer aus den Stammdaten.
             </div>
 
