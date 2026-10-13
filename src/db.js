@@ -441,6 +441,42 @@ export async function syncEinsatzplan(next) {
   return fetchEinsatzplan();
 }
 
+// ------------------------------------------------------ routecontrol-Abgleich --
+// Ruft die Supabase Edge Function "routecontrol-sync" auf: sie meldet sich mit
+// den als Secret hinterlegten routecontrol-Zugangsdaten an, holt die Tacho-
+// stände (CAN-Bus) aus dem Routenbericht und schreibt sie als Ende-KM in den
+// Einsatzplan. Läuft zusätzlich automatisch jeden Abend um 23:59 Uhr (pg_cron).
+// Mit jahr/kw nur diese Woche, ohne: aktuelle Woche + Vorwoche.
+export async function syncRoutecontrolKm(jahr, kw) {
+  const { data, error } = await supabase.functions.invoke("routecontrol-sync", {
+    body: jahr && kw ? { jahr, kw } : {},
+  });
+  if (error) {
+    let message = error.message || "KM-Stände konnten nicht abgerufen werden.";
+    try {
+      const body = await error.context.json();
+      if (body && (body.fehler || body.error)) message = body.fehler || body.error;
+    } catch {
+      // keine JSON-Antwort - Standardmeldung behalten.
+    }
+    throw new Error(message);
+  }
+  if (data && data.ok === false) throw new Error(data.fehler || "KM-Stände konnten nicht abgerufen werden.");
+  return data;
+}
+
+// Letzter Abgleich (manuell oder Zeitplan) für die Anzeige im Einsatzplan.
+export async function fetchLastRoutecontrolSync() {
+  const { data, error } = await supabase
+    .from("routecontrol_sync_log")
+    .select("created_at, ok, fehler, ausloeser")
+    .order("id", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
 // ------------------------------------------------------------ Diesel-Index --
 // createdAt wird für die automatische Diesel-Berechnung in App.jsx gebraucht:
 // bei mehreren Einträgen für denselben Monat zählt der zuletzt erfasste.
