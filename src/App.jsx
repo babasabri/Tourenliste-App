@@ -1905,7 +1905,8 @@ export default function TourenApp() {
   // "Neue Tour": Kunde gewählt -> alle kundenspezifischen Felder aus dem
   // LETZTEN Auftrag dieses Kunden übernehmen. Bewusst NICHT übernommen (bleiben
   // wie im Formular): Auftrags-Nr., Container-Nr., Ankunft, Abfahrt, FD,
-  // Wartezeit sowie Datum, LKW, Fahrer, Bemerkungen und Status. Der Diesel
+  // Wartezeit sowie Datum, LKW, Fahrer, Bemerkungen, Status und das Häkchen
+  // "Anderer Auftraggeber" (nur der Nutzer setzt es). Der Diesel
   // wird mit dem Diesel-Index des Tourmonats neu berechnet (falls KM und Datum
   // vorhanden), sonst der Wert der letzten Tour übernommen.
   function fillFormFromCustomer(f, c) {
@@ -1923,14 +1924,20 @@ export default function TourenApp() {
     let next = {
       ...f, kunde: c.name,
       plz: last.plz || c.plz || f.plz, ort: last.ort || c.ort || f.ort,
-      km: v(last.km), fracht: v(last.fracht), adr: v(last.adr),
-      multistop: v(last.multistop), maut: v(last.maut), diesel: v(last.diesel),
-      andererAuftraggeber: !!last.andererAuftraggeber,
+      fracht: v(last.fracht),
     };
-    if (next.andererAuftraggeber) {
+    // Das Häkchen "Anderer Auftraggeber" setzt/entfernt NUR der Nutzer selbst
+    // (wird nie aus dem letzten Auftrag übernommen). Ist es gesetzt, bleiben die
+    // gesperrten Felder leer; sonst kommen KM/ADR/Multistop/Maut/Diesel aus
+    // dem letzten Auftrag.
+    if (f.andererAuftraggeber) {
       const fracht = next.fracht;
       next = { ...clearLockedFields(next), fracht };
     } else {
+      next = {
+        ...next, km: v(last.km), adr: v(last.adr), multistop: v(last.multistop),
+        maut: v(last.maut), diesel: v(last.diesel),
+      };
       const d = calcDiesel(next.km, next.datum);
       if (d !== "") next.diesel = d;
     }
