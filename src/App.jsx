@@ -662,6 +662,8 @@ export default function TourenApp() {
   const [fbLoading, setFbLoading] = useState(false);
   const [fbError, setFbError] = useState("");
   const [fbInfo, setFbInfo] = useState(null);
+  // Hinweis unter dem Kunde-Feld ("Neue Tour"), woher die Vorbelegung stammt.
+  const [kundeFillNote, setKundeFillNote] = useState(null); // { kunde, text }
   // Gutschriften-Abgleich: gsLoading während PDF-Auslesen+Abgleich,
   // gsPreview = { meta, positionen } solange noch nicht übernommen (erst nach
   // Klick auf "Übernehmen" werden Status/DB tatsächlich geändert), gsApplying
@@ -1878,6 +1880,63 @@ export default function TourenApp() {
   // eines Durchschnitts.
   const lastTour = lastTourFor(form.kunde);
 
+  // Auswahlliste fürs Kunde-Feld: Kundenstamm (customers) PLUS alle Kunden, die
+  // bereits in Touren vorkommen, aber (noch) nicht im Stamm stehen - so geht
+  // kein Kunde verloren, auch wenn er nur einmal frei eingetippt wurde.
+  const customerOptions = useMemo(() => {
+    const known = new Set(customers.map((c) => (c.name || "").trim().toLowerCase()));
+    const extra = new Map();
+    tours.forEach((t) => {
+      const name = (t.kunde || "").trim();
+      if (!name) return;
+      const key = name.toLowerCase();
+      if (known.has(key)) return;
+      const prev = extra.get(key);
+      if (!prev || (t.datum || "") > (prev.datum || "")) {
+        extra.set(key, { name, plz: t.plz || "", ort: t.ort || "", datum: t.datum || "" });
+      }
+    });
+    const fromTours = [...extra.entries()].map(([key, v]) => ({
+      id: "tour:" + key, name: v.name, plz: v.plz, ort: v.ort, defaultMaut: "",
+    }));
+    return [...customers, ...fromTours].sort((a, b) => a.name.localeCompare(b.name, "de"));
+  }, [customers, tours]);
+
+  // "Neue Tour": Kunde gewählt -> alle kundenspezifischen Felder aus dem
+  // LETZTEN Auftrag dieses Kunden übernehmen. Bewusst NICHT übernommen (bleiben
+  // wie im Formular): Auftrags-Nr., Container-Nr., Ankunft, Abfahrt, FD,
+  // Wartezeit sowie Datum, LKW, Fahrer, Bemerkungen und Status. Der Diesel
+  // wird mit dem Diesel-Index des Tourmonats neu berechnet (falls KM und Datum
+  // vorhanden), sonst der Wert der letzten Tour übernommen.
+  function fillFormFromCustomer(f, c) {
+    const last = lastTourFor(c.name);
+    if (!last) {
+      return {
+        last: null,
+        form: {
+          ...f, kunde: c.name, plz: c.plz || f.plz, ort: c.ort || f.ort,
+          ...(!f.andererAuftraggeber && c.defaultMaut !== "" && c.defaultMaut !== null ? { maut: c.defaultMaut } : {}),
+        },
+      };
+    }
+    const v = (x) => (x === undefined || x === null ? "" : x);
+    let next = {
+      ...f, kunde: c.name,
+      plz: last.plz || c.plz || f.plz, ort: last.ort || c.ort || f.ort,
+      km: v(last.km), fracht: v(last.fracht), adr: v(last.adr),
+      multistop: v(last.multistop), maut: v(last.maut), diesel: v(last.diesel),
+      andererAuftraggeber: !!last.andererAuftraggeber,
+    };
+    if (next.andererAuftraggeber) {
+      const fracht = next.fracht;
+      next = { ...clearLockedFields(next), fracht };
+    } else {
+      const d = calcDiesel(next.km, next.datum);
+      if (d !== "") next.diesel = d;
+    }
+    return { form: next, last };
+  }
+
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "neu", label: "Neue Tour", icon: PlusCircle },
@@ -2659,20 +2718,23 @@ export default function TourenApp() {
               <div>
                 <label>Kunde / Ladestelle *</label>
                 <CustomerAutocomplete
-                  customers={customers}
+                  customers={customerOptions}
                   value={form.kunde}
                   style={fbFieldStyle("kunde", fbInfo, formErrors)}
                   onChange={(v) => { setForm({ ...form, kunde: v }); setFormErrors(formErrors.filter((k) => k !== "kunde")); clearFbFlag("kunde"); }}
                   onSelect={(c) => {
-                    setForm({
-                      ...form, kunde: c.name,
-                      plz: c.plz || form.plz, ort: c.ort || form.ort,
-                      ...(!form.andererAuftraggeber && c.defaultMaut !== "" && c.defaultMaut !== null ? { maut: c.defaultMaut } : {}),
-                    });
-                    setFormErrors(formErrors.filter((k) => !["kunde", "plz", "ort"].includes(k)));
+                    const { form: filled, last } = fillFormFromCustomer(form, c);
+                    setForm(filled);
+                    setKundeFillNote(last
+                      ? { kunde: c.name, text: `Vorbelegt aus dem letzten Auftrag vom ${formatDateDMY(last.datum)}${last.auftragsNr ? ` (${last.auftragsNr})` : ""} - Auftrags-Nr., Container, Zeiten, FD und Wartezeit bitte selbst eintragen.` }
+                      : null);
+                    setFormErrors(formErrors.filter((k) => !["kunde", "plz", "ort", "km", "fracht"].includes(k)));
                     clearFbFlag("kunde"); clearFbFlag("plz"); clearFbFlag("ort");
                   }}
                 />
+                {kundeFillNote && kundeFillNote.kunde === form.kunde && (
+                  <div style={{ marginTop: 4, fontSize: 11.5, color: TEXT_MUTED }}>{kundeFillNote.text}</div>
+                )}
               </div>
               <div>
                 <label>PLZ * {lastTour && <span style={{ color: TEXT_MUTED }}>· Vorschlag: {lastTour.plz}</span>}</label>
@@ -3664,7 +3726,7 @@ export default function TourenApp() {
               </div>
               <div><label>Kunde *</label>
                 <CustomerAutocomplete
-                  customers={customers}
+                  customers={customerOptions}
                   value={editForm.kunde}
                   style={fieldStyle("kunde", editErrors)}
                   onChange={(v) => { setEditForm({ ...editForm, kunde: v }); setEditErrors(editErrors.filter((k) => k !== "kunde")); }}
