@@ -1,0 +1,27 @@
+{
+  "name": "Royal Logistik Fahrer",
+  "short_name": "Frachtbrief",
+  "description": "Frachtbriefe scannen und ans Büro senden",
+  "id": "/fahrer/",
+  "start_url": "/fahrer/",
+  "scope": "/fahrer/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F3F2EE",
+  "theme_color": "#16202A",
+  "lang": "de",
+  "icons": [
+    {
+      "src": "/fahrer/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/fahrer/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
