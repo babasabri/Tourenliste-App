@@ -1,8 +1,10 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, Suspense, lazy, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { LogOut } from "lucide-react";
 import { supabase } from "./supabaseClient";
-import TourenApp from "./App";
+// Tourenliste erst bei Bedarf laden - so bleibt die Fahrer-App (/fahrer/)
+// auf dem Handy klein und schnell.
+const TourenApp = lazy(() => import("./App"));
 
 const MARINE = "#0F2A43";
 const AMBER = "#F2A63C";
@@ -105,10 +107,28 @@ function LoginGate({ children }) {
   );
 }
 
-createRoot(document.getElementById("root")).render(
-  <StrictMode>
-    <LoginGate>
-      <TourenApp />
-    </LoginGate>
-  </StrictMode>
-);
+// Fahrer-App unter /fahrer/ (eigenes Login per PIN, kein Team-Zugang nötig) -
+// wird nur auf diesen Seiten geladen, damit die Tourenliste unverändert bleibt.
+if (window.location.pathname === "/fahrer") window.history.replaceState(null, "", "/fahrer/");
+const isFahrerApp = window.location.pathname.startsWith("/fahrer/");
+
+if (isFahrerApp) {
+  import("./fahrer/setup.js").then(({ setupFahrerPage }) => setupFahrerPage());
+  import("./fahrer/FahrerApp.jsx").then(({ default: FahrerApp }) => {
+    createRoot(document.getElementById("root")).render(
+      <StrictMode>
+        <FahrerApp />
+      </StrictMode>
+    );
+  });
+} else {
+  createRoot(document.getElementById("root")).render(
+    <StrictMode>
+      <LoginGate>
+        <Suspense fallback={<div style={{ padding: 40, textAlign: "center", color: TEXT_MUTED, fontFamily: "'Space Grotesk', sans-serif" }}>Lade …</div>}>
+          <TourenApp />
+        </Suspense>
+      </LoginGate>
+    </StrictMode>
+  );
+}
