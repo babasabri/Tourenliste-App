@@ -7,11 +7,12 @@ import {
   LayoutDashboard, Truck, PlusCircle, Search as SearchIcon, Users,
   Fuel, X, Save, Trash2, Pencil, AlertTriangle, CalendarClock, Upload, ListChecks, RefreshCw,
   TrendingUp, MapPin, FileDown, FileText, FileSpreadsheet, FileScan, Loader2, Menu,
-  Receipt, CheckCircle2, HelpCircle, Play,
+  Receipt, CheckCircle2, HelpCircle, Play, Inbox,
 } from "lucide-react";
 import * as db from "./db";
 import { parseGutschriftPdf } from "./gutschriftParser";
 import { supabase } from "./supabaseClient";
+import FrachtbriefEingang from "./FrachtbriefEingang";
 // Export-Bibliotheken (jsPDF, ExcelJS) sind vergleichsweise groß - werden per
 // dynamic import() erst geladen, wenn der Export-Tab tatsächlich genutzt wird,
 // statt das Hauptbundle für alle Nutzer aufzublähen (siehe handleExportPdf/
@@ -662,6 +663,11 @@ export default function TourenApp() {
   const [fbLoading, setFbLoading] = useState(false);
   const [fbError, setFbError] = useState("");
   const [fbInfo, setFbInfo] = useState(null);
+  // Fahrer-App: Eingangs-Zeile, aus der "Neue Tour" gerade befüllt wurde (wird
+  // beim Speichern mit der Tour verknüpft und erledigt) + Anzahl neuer Briefe
+  // für die Seitenleiste.
+  const [eingangRow, setEingangRow] = useState(null);
+  const [eingangNeu, setEingangNeu] = useState(0);
   // Hinweis unter dem Kunde-Feld ("Neue Tour"), woher die Vorbelegung stammt.
   const [kundeFillNote, setKundeFillNote] = useState(null); // { kunde, text }
   // Gutschriften-Abgleich: gsLoading während PDF-Auslesen+Abgleich,
@@ -698,6 +704,18 @@ export default function TourenApp() {
   const [saveNote, setSaveNote] = useState("");
   const [dupWarning, setDupWarning] = useState(null);
   const [newPlate, setNewPlate] = useState("");
+
+  // Anzahl neuer Frachtbriefe aus der Fahrer-App (Seitenleiste), jede Minute.
+  useEffect(() => {
+    let aktiv = true;
+    const zaehlen = async () => {
+      const { count } = await supabase.from("frachtbrief_eingang").select("id", { count: "exact", head: true }).eq("status", "neu");
+      if (aktiv && typeof count === "number") setEingangNeu(count);
+    };
+    zaehlen();
+    const iv = setInterval(zaehlen, 60000);
+    return () => { aktiv = false; clearInterval(iv); };
+  }, []);
   const [importStatus, setImportStatus] = useState("");
   const [importPreview, setImportPreview] = useState(null);
   const [newDriver, setNewDriver] = useState("");
@@ -884,8 +902,10 @@ export default function TourenApp() {
     setStorageError("");
     try {
       setTours(await db.syncTours(tours, next));
+      return true;
     } catch (e) {
       setStorageError("Speichern fehlgeschlagen. Bitte Seite neu laden und die letzte Änderung erneut vornehmen.");
+      return false;
     }
   }
 
@@ -1174,10 +1194,14 @@ export default function TourenApp() {
   // Kennzeichen wird gegen die Stammdaten geprüft (siehe matchFleetPlate) -
   // ohne Treffer bleibt das LKW-Feld unverändert und es gibt eine Warnung
   // statt eines geratenen Werts.
-  function applyFrachtbriefData(extracted) {
+  // baseForm: Ausgangsformular (Standard: aktuelles Formular). quelle: bei
+  // Briefen aus der Fahrer-App { fahrer, lkw } des sendenden Fahrers - der
+  // Fahrer ist damit sicher bekannt, der LKW (Einsatzplan) dient als Ersatz,
+  // falls das Kennzeichen auf dem Papier nicht lesbar ist.
+  function applyFrachtbriefData(extracted, baseForm = form, quelle = null) {
     const unsure = new Set(extracted.unsichereFelder || []);
     const filled = [];
-    const next = { ...form };
+    const next = { ...baseForm };
 
     const setField = (key, value) => {
       if (value === undefined || value === null || value === "") return;
@@ -1207,6 +1231,14 @@ export default function TourenApp() {
       // hat (z. B. weil es nur handschriftlich und ohne eigenes Feldlabel auf dem
       // Dokument stand) - wirkte dann so, als wäre alles erkannt worden.
       lkwWarn = "Kennzeichen wurde auf dem Dokument nicht gefunden - bitte LKW manuell auswählen.";
+    }
+    if (quelle) {
+      if (!next.lkw && quelle.lkw && fleet.some((f) => f.plate === quelle.lkw)) {
+        setField("lkw", quelle.lkw);
+        unsure.add("lkw");
+        lkwWarn = `Kennzeichen auf dem Papier nicht erkannt - LKW "${quelle.lkw}" aus dem Einsatzplan von ${quelle.fahrer} übernommen, bitte prüfen.`;
+      }
+      if (quelle.fahrer && drivers.some((d) => d.name === quelle.fahrer)) setField("fahrer", quelle.fahrer);
     }
 
     setField("auftragsNr", extracted.auftragsNr);
@@ -1291,11 +1323,42 @@ export default function TourenApp() {
     setFbInfo({ filled, unsure, lkwWarn, timeWarn, locationNote });
   }
 
+  // "Tour anlegen" im Frachtbrief-Eingang: Neue Tour mit den ausgelesenen
+  // Daten öffnen. Gespeichert wird weiterhin erst nach Prüfung von Hand.
+  function startTourFromEingang(row) {
+    setTab("neu");
+    setTourStarted(true);
+    setFbError("");
+    setDupWarning(null);
+    setKundeFillNote(null);
+    setSaveNote("");
+    setFormErrors([]);
+    setEingangRow(row);
+    if (row.extraktion) {
+      applyFrachtbriefData(row.extraktion, emptyForm, { fahrer: row.fahrer, lkw: row.lkw });
+    } else {
+      const f = { ...emptyForm };
+      if (drivers.some((d) => d.name === row.fahrer)) f.fahrer = row.fahrer;
+      if (row.lkw && fleet.some((x) => x.plate === row.lkw)) f.lkw = row.lkw;
+      setForm(f);
+      setFbInfo(null);
+      setFbError("Dieser Frachtbrief wurde nicht automatisch ausgelesen - bitte Felder von Hand ausfüllen (Original im Eingang ansehen).");
+    }
+    window.scrollTo(0, 0);
+  }
+
+  async function openEingangPdf() {
+    if (!eingangRow) return;
+    const { data } = await supabase.storage.from("frachtbriefe").createSignedUrl(eingangRow.datei_pfad, 3600);
+    if (data?.signedUrl) window.open(data.signedUrl, "_blank", "noopener");
+  }
+
   async function handleFrachtbriefUpload(e) {
     const file = e.target.files && e.target.files[0];
     e.target.value = ""; // erlaubt erneuten Upload derselben/einer gleichnamigen Datei
     if (!file) return;
     setTourStarted(true); // Upload startet die Erfassung automatisch
+    setEingangRow(null);
 
     const ALLOWED_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
     if (!ALLOWED_TYPES.includes(file.type)) {
@@ -1454,7 +1517,16 @@ export default function TourenApp() {
   function doSaveTour() {
     // Status kommt jetzt aus dem Formular (Pflichtfeld) statt fest auf "Offen".
     const rec = form.andererAuftraggeber ? clearLockedFields({ ...form, id: uid() }) : { ...form, id: uid() };
-    persistTours([rec, ...tours]);
+    persistTours([rec, ...tours]).then((ok) => {
+      // Kam die Tour aus dem Frachtbrief-Eingang: Brief erledigen + verknüpfen
+      if (ok && eingangRow) {
+        supabase.from("frachtbrief_eingang")
+          .update({ status: "erledigt", tour_id: rec.id, erledigt_at: new Date().toISOString() })
+          .eq("id", eingangRow.id)
+          .then(() => setEingangNeu((n) => Math.max(0, n - 1)));
+      }
+      setEingangRow(null);
+    });
     setForm(emptyForm);
     setTourStarted(false);
     setFormErrors([]);
@@ -1468,6 +1540,7 @@ export default function TourenApp() {
   // Setzt das "Neue Tour"-Formular zurück, ohne zu speichern (z. B. nach
   // einem versehentlichen Frachtbrief-Upload oder falscher Eingabe).
   function handleCancelNewTour() {
+    setEingangRow(null);
     setForm(emptyForm);
     setTourStarted(false);
     setFormErrors([]);
@@ -1947,6 +2020,7 @@ export default function TourenApp() {
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "neu", label: "Neue Tour", icon: PlusCircle },
+    { id: "eingang", label: eingangNeu > 0 ? `Frachtbrief-Eingang (${eingangNeu})` : "Frachtbrief-Eingang", icon: Inbox },
     { id: "wochenkontrolle", label: "Wochen-Kontrolle", icon: ListChecks },
     { id: "touren", label: "Touren", icon: Truck },
     { id: "suche", label: "Suche", icon: SearchIcon },
@@ -2642,6 +2716,13 @@ export default function TourenApp() {
           </div>
         )}
 
+        {tab === "eingang" && (
+          <div>
+            <PageHeading icon={Inbox} title="Frachtbrief-Eingang" subtitle="Von den Fahrern per App geschickt - schon ausgelesen. Prüfen, Tour anlegen, fertig." />
+            <FrachtbriefEingang drivers={drivers} fleet={fleet} tours={tours} onTourAnlegen={startTourFromEingang} onCountChange={setEingangNeu} />
+          </div>
+        )}
+
         {tab === "neu" && (
           <div>
           <PageHeading icon={PlusCircle} title="Neue Tour erfassen" />
@@ -2675,6 +2756,12 @@ export default function TourenApp() {
                 <span style={{ fontWeight: 500 }}>Anderer Auftraggeber</span>
                 <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>· nur Fracht erfassen (Container, Zeiten, KM und übrige Kosten gesperrt)</span>
               </label>
+              {eingangRow && (
+                <div style={{ marginTop: 10, fontSize: 12.5, color: MARINE, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <Inbox size={14} /> Aus der Fahrer-App: gesendet von <strong>{eingangRow.fahrer}</strong> am {new Date(eingangRow.created_at).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                  <button type="button" className="ghost" style={{ padding: "3px 8px", fontSize: 12 }} onClick={openEingangPdf}>Original ansehen</button>
+                </div>
+              )}
               {fbError && <div style={{ marginTop: 10, fontSize: 12.5, color: DANGER }}>{fbError}</div>}
               {fbInfo && (
                 <div style={{ marginTop: 10, fontSize: 12.5, color: AMBER_DARK }}>
