@@ -23,6 +23,7 @@ const fromDb = (r) => ({
   kmBeleg: r.km_beleg,
   kmRc: r.km_rc,
   kmRcStatus: r.km_rc_status,
+  quelle: r.quelle || "tankpool",
 });
 
 // Paginiert (Supabase liefert max. 1000 Zeilen pro Abfrage).
@@ -53,6 +54,7 @@ export async function fetchTankpoolRechnungen() {
     datum: r.rechnung_datum,
     typ: r.typ,
     summe: num(r.summe_netto),
+    quelle: r.quelle || "tankpool",
     dateiname: r.dateiname,
     importiertAm: r.importiert_am,
   }));
@@ -65,7 +67,9 @@ export async function importTankpoolRechnung(parsed) {
       rechnung_nr: parsed.rechnungNr,
       rechnung_datum: parsed.rechnungDatum,
       typ: parsed.typ,
-      summe_netto: parsed.dokumentSumme,
+      // Shell: nur die übernommenen LKW-Positionen (andere Karten werden ignoriert)
+      summe_netto: parsed.importSumme ?? parsed.dokumentSumme,
+      quelle: parsed.quelle || "tankpool",
       dateiname: parsed.dateiname,
     },
     p_positionen: parsed.positionen.map((p) => ({

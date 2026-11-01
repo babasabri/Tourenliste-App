@@ -16,6 +16,7 @@
 // ============================================================================
 
 import { loadPdfjs, extractLayoutLines } from "./gutschriftParser";
+import { istShellBeleg, parseShellLines } from "./shellParser";
 
 // Die Tankkarte des Miet-LKW steht auf der Rechnung nur als "Mietfahrzeug".
 // Vorgabe: bis 26.07.2026 war das der frühere Miet-LKW KO-OF 213, ab
@@ -151,7 +152,35 @@ export function parseTankpoolLines(lines, fleetPlates) {
   res.positionen.forEach((p) => { p.lkw = ordneLkwZu(p.kennzeichen_beleg, p.datum, fleetPlates); });
   res.parsedSumme = r2(res.positionen.reduce((s, p) => s + p.wert_netto, 0));
   res.summenAbweichung = res.dokumentSumme === null || Math.abs(res.dokumentSumme - res.parsedSumme) > 0.005;
+  res.quelle = "tankpool";
+  res.importSumme = res.parsedSumme;
+  res.ueberspringen = null;
   return res;
+}
+
+// Gemeinsamer Einstieg für alle Tankkarten: erkennt am Inhalt, ob es ein
+// Shell-(SVG/euroShell-) oder ein Tankpool-Beleg ist.
+export async function parseTankbelegPdf(file, fleetPlates) {
+  const pdfjsLib = await loadPdfjs();
+  const buf = await file.arrayBuffer();
+  let pdf;
+  try {
+    pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+  } catch {
+    throw new Error("PDF konnte nicht geöffnet werden - ist die Datei beschädigt oder passwortgeschützt?");
+  }
+  const lines = await extractLayoutLines(pdf);
+  if (istShellBeleg(lines)) {
+    const res = parseShellLines(lines, fleetPlates);
+    if (!res.rechnungNr) throw new Error("Shell-Beleg ohne Rechnungsnummer - Layout unbekannt.");
+    if (res.fehler) throw new Error(res.fehler);
+    return { dateiname: file.name, ...res };
+  }
+  const res = parseTankpoolLines(lines, fleetPlates);
+  if (!res.rechnungNr || res.positionen.length === 0) {
+    throw new Error("Weder Tankpool- noch Shell-Rechnung erkannt (keine Rechnungsnummer oder keine Positionen gefunden).");
+  }
+  return { dateiname: file.name, ...res };
 }
 
 export async function parseTankpoolPdf(file, fleetPlates) {

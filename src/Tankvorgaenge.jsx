@@ -9,7 +9,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Upload, Loader2, Trash2, RefreshCw, CheckCircle2, AlertTriangle, Gauge } from "lucide-react";
-import { parseTankpoolPdf } from "./tankpoolParser";
+import { parseTankbelegPdf } from "./tankpoolParser";
 import * as tdb from "./tankDb";
 
 const MARINE = "#0F2A43";
@@ -96,14 +96,20 @@ function kmJeLkw(wochen, { start, ende }) {
 // Stopp: km seit dem vorherigen Stopp; die dort getankten Liter gehören zu
 // genau dieser Strecke. Erster Stopp eines LKW zählt nicht (keine Strecke
 // davor). Sprünge über 6.000 km oder rückwärts gelten als Datenfehler.
+// Shell-Tankungen (ohne Uhrzeit und ohne KM-Stand) zählen mit ihren Litern zur
+// Strecke bis zum nächsten Tankpool-Stopp an einem SPÄTEREN Tag (gebucht auf
+// diesen Stopp).
 const MAX_KM_ZWISCHEN_TANKUNGEN = 6000;
 function mitTachoStrecken(daten) {
   const proLkw = {};
+  const ohneKm = {}; // Shell-Diesel je LKW
   for (const t of daten) {
-    if (t.kategorie === "diesel" && t.kmRc) (proLkw[t.lkw] = proLkw[t.lkw] || []).push(t);
+    if (t.kategorie !== "diesel") continue;
+    if (t.kmRc) (proLkw[t.lkw] = proLkw[t.lkw] || []).push(t);
+    else if (t.quelle === "shell") (ohneKm[t.lkw] = ohneKm[t.lkw] || []).push(t);
   }
   const info = {}; // id -> { kmSeit, tachoKm, tachoL, tachoDE }
-  for (const rows of Object.values(proLkw)) {
+  for (const [lkw, rows] of Object.entries(proLkw)) {
     rows.sort((a, b) => (a.datum + a.zeit).localeCompare(b.datum + b.zeit));
     const stopps = [];
     for (const t of rows) {
@@ -114,9 +120,21 @@ function mitTachoStrecken(daten) {
     for (let i = 1; i < stopps.length; i++) {
       const delta = stopps[i].km - stopps[i - 1].kmLetzt;
       if (delta <= 0 || delta > MAX_KM_ZWISCHEN_TANKUNGEN) continue;
+      stopps[i].ok = true;
       stopps[i].rows.forEach((t, j) => {
         info[t.id] = { kmSeit: j === 0 ? delta : null, tachoKm: j === 0 ? delta : 0, tachoL: t.menge || 0, tachoDE: t.wert };
       });
+    }
+    for (const sh of ohneKm[lkw] || []) {
+      const ziel = stopps.find((st) => st.rows[0].datum > sh.datum);
+      if (ziel && ziel.ok && stopps.indexOf(ziel) > 0 && stopps[stopps.indexOf(ziel) - 1].rows[0].datum <= sh.datum) {
+        // Liter/Kosten auf den Stopp buchen, der die Strecke abschließt - so
+        // landen Liter und km bei Monats-/Zeitraumgrenzen immer zusammen.
+        const ziel0 = info[ziel.rows[0].id];
+        ziel0.tachoL += sh.menge || 0;
+        ziel0.tachoDE += sh.wert;
+        ziel0.shellL = (ziel0.shellL || 0) + (sh.menge || 0);
+      }
     }
   }
   return daten.map((t) => (info[t.id] ? { ...t, ...info[t.id] } : t));
@@ -159,6 +177,16 @@ function auswerten(rows, lkwListe, kmMap) {
   return { lkwRows, ...tot };
 }
 
+function KarteBadge({ quelle }) {
+  const shell = quelle === "shell";
+  return (
+    <span style={{
+      fontSize: 10.5, fontWeight: 600, padding: "2px 7px", borderRadius: 10, whiteSpace: "nowrap",
+      background: shell ? "#FFF4C2" : "#E4ECF5", color: shell ? "#7A5B00" : MARINE,
+    }}>{shell ? "Shell" : "Tankpool"}</span>
+  );
+}
+
 function Kpi({ label, value, sub }) {
   return (
     <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "12px 14px" }}>
@@ -179,7 +207,7 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
   const [laden, setLaden] = useState(true);
   const [fehler, setFehler] = useState("");
   const heute = new Date();
-  const [f, setF] = useState({ jahr: String(heute.getFullYear()), monat: "ALLE", lkw: "ALLE", kategorie: "ALLE", von: "", bis: "" });
+  const [f, setF] = useState({ jahr: String(heute.getFullYear()), monat: "ALLE", lkw: "ALLE", kategorie: "ALLE", quelle: "ALLE", von: "", bis: "" });
 
   // Upload
   const [vorschau, setVorschau] = useState([]); // [{dateiname, ok, fehler, parsed, schonDa}]
@@ -212,7 +240,7 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
     const out = [];
     for (const file of files) {
       try {
-        const parsed = await parseTankpoolPdf(file, fleetPlates);
+        const parsed = await parseTankbelegPdf(file, fleetPlates);
         const doppelt = out.some((o) => o.parsed && o.parsed.rechnungNr === parsed.rechnungNr);
         out.push({ dateiname: file.name, parsed, schonDa: bekannte.has(parsed.rechnungNr) || doppelt });
       } catch (err) {
@@ -224,16 +252,17 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
     setParsing(false);
   }
 
-  const importierbar = vorschau.filter((v) => v.parsed && !v.schonDa && !v.parsed.summenAbweichung);
+  const importierbar = vorschau.filter((v) => v.parsed && !v.schonDa && !v.parsed.ueberspringen && !v.parsed.summenAbweichung);
 
   async function uebernehmen() {
     setImportiere(true);
-    let n = 0, pos = 0;
+    let n = 0, pos = 0, nTankpool = 0;
     const fehlerListe = [];
     for (const v of importierbar) {
       try {
         pos += await tdb.importTankpoolRechnung(v.parsed);
         n++;
+        if (v.parsed.quelle === "tankpool") nTankpool++;
       } catch (err) {
         fehlerListe.push(`${v.parsed.rechnungNr}: ${err.message}`);
       }
@@ -241,8 +270,9 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
     setImportiere(false);
     setVorschau([]);
     const text = `${n} Rechnung(en) mit ${pos} Positionen übernommen.` + (fehlerListe.length ? ` Fehler: ${fehlerListe.join("; ")}` : "");
-    setMeldung({ ok: fehlerListe.length === 0, text: text + (n > 0 ? " KM-Stände werden aus routecontrol geholt …" : "") });
-    if (n > 0) {
+    // KM-Stände nur für Tankpool (Vorgabe: bei Shell keine KM aus routecontrol)
+    setMeldung({ ok: fehlerListe.length === 0, text: text + (nTankpool > 0 ? " KM-Stände werden aus routecontrol geholt …" : "") });
+    if (nTankpool > 0) {
       try {
         const r = await tdb.syncTankKm();
         setMeldung({ ok: fehlerListe.length === 0, text: `${text} KM-Stände aus routecontrol: ${r.ok} ermittelt.` });
@@ -284,7 +314,7 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
   // Tankdaten reichen nur bis zum Ende der letzten Sammelrechnung - km danach
   // dürfen nicht mitzählen, sonst wäre der Verbrauch zu niedrig.
   const abgedecktBis = useMemo(
-    () => rechnungen.filter((r) => r.typ === "sammel").reduce((m, r) => (r.datum > m ? r.datum : m), ""),
+    () => rechnungen.filter((r) => r.typ === "sammel" && r.quelle === "tankpool").reduce((m, r) => (r.datum > m ? r.datum : m), ""),
     [rechnungen]
   );
   const kappe = (z) => ({ start: z.start, ende: abgedecktBis && (!z.ende || z.ende > abgedecktBis) ? abgedecktBis : z.ende });
@@ -321,7 +351,7 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
 
   // KM-Stände aus routecontrol nachladen (für Tankungen ohne Ergebnis)
   const [kmSync, setKmSync] = useState(false);
-  const ohneKm = daten.filter((t) => t.zeit && !t.kmRcStatus).length;
+  const ohneKm = daten.filter((t) => t.quelle !== "shell" && t.zeit && !t.kmRcStatus).length;
   async function kmHolen() {
     setKmSync(true);
     setMeldung(null);
@@ -337,10 +367,10 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
 
   const liste = useMemo(
     () => imZeitraum
-      .filter((t) => f.kategorie === "ALLE" || t.kategorie === f.kategorie)
+      .filter((t) => (f.kategorie === "ALLE" || t.kategorie === f.kategorie) && (f.quelle === "ALLE" || t.quelle === f.quelle))
       .slice()
       .sort((a, b) => (b.datum + b.zeit).localeCompare(a.datum + a.zeit)),
-    [imZeitraum, f.kategorie]
+    [imZeitraum, f.kategorie, f.quelle]
   );
   const listeSumme = liste.reduce((s, t) => s + t.wert, 0);
   const listeLiter = liste.filter((t) => t.einheit === "L").reduce((s, t) => s + (t.menge || 0), 0);
@@ -353,9 +383,10 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
     <div>
       {/* ---------------- Upload ---------------- */}
       <div style={{ ...card, maxWidth: 820 }}>
-        <div style={h2}>Tankpool-Rechnungen hochladen</div>
+        <div style={h2}>Tankrechnungen hochladen (Tankpool, Shell)</div>
         <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 14 }}>
-          Eine oder mehrere PDFs auf einmal auswählen. Die Positionen werden direkt aus dem Text gelesen (keine KI) und
+          Eine oder mehrere PDFs auf einmal auswählen – die Karte (Tankpool oder Shell) wird automatisch erkannt.
+          Bei Shell werden nur Karten mit LKW-Kennzeichen aus dem Fuhrpark übernommen. Die Positionen werden direkt aus dem Text gelesen (keine KI) und
           gegen die Rechnungssumme geprüft. Schon importierte Rechnungen werden erkannt und übersprungen.
           {letzteTankung && <> Letzte erfasste Tankung: <b>{dmy(letzteTankung)}</b>.</>}
         </div>
@@ -375,7 +406,7 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
             <div style={{ overflowX: "auto" }}>
               <table>
                 <thead>
-                  <tr><th>Datei</th><th>Rechnung</th><th>Datum</th><th style={{ textAlign: "right" }}>Positionen</th><th style={{ textAlign: "right" }}>Summe netto</th><th>Prüfung</th></tr>
+                  <tr><th>Datei</th><th>Karte</th><th>Rechnung</th><th>Datum</th><th style={{ textAlign: "right" }}>Positionen</th><th style={{ textAlign: "right" }}>Summe netto</th><th>Prüfung</th></tr>
                 </thead>
                 <tbody>
                   {vorschau.map((v, i) => {
@@ -384,15 +415,23 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
                     let status;
                     if (v.fehler) status = <span style={{ color: DANGER }}>{v.fehler}</span>;
                     else if (v.schonDa) status = <span style={{ color: TEXT_MUTED }}>schon importiert – wird übersprungen</span>;
+                    else if (p.ueberspringen) status = <span style={{ color: TEXT_MUTED }}>{p.ueberspringen} – wird übersprungen</span>;
                     else if (p.summenAbweichung) status = <span style={{ color: DANGER }}><AlertTriangle size={13} /> Summe passt nicht ({euro(p.parsedSumme)} statt {euro(p.dokumentSumme)}) – wird nicht übernommen</span>;
-                    else status = <span style={{ color: SUCCESS }}><CheckCircle2 size={13} style={{ verticalAlign: -2 }} /> Summe stimmt{fremd.length > 0 && <span style={{ color: AMBER_DARK }}> · nicht im Fuhrpark: {fremd.join(", ")}</span>}</span>;
+                    else status = (
+                      <span style={{ color: SUCCESS }}>
+                        <CheckCircle2 size={13} style={{ verticalAlign: -2 }} /> Summe stimmt
+                        {p.quelle === "shell" && p.ignoriert?.anzahl > 0 && <span style={{ color: TEXT_MUTED }}> · {p.ignoriert.anzahl} Pos. anderer Karten ignoriert ({euro(p.ignoriert.summe)})</span>}
+                        {fremd.length > 0 && <span style={{ color: AMBER_DARK }}> · nicht im Fuhrpark: {fremd.join(", ")}</span>}
+                      </span>
+                    );
                     return (
                       <tr key={i}>
                         <td style={{ fontSize: 12 }}>{v.dateiname}</td>
+                        <td>{p ? <KarteBadge quelle={p.quelle} /> : "–"}</td>
                         <td className="mono">{p?.rechnungNr || "–"}</td>
                         <td className="mono">{p ? dmy(p.rechnungDatum) : "–"}</td>
                         <td className="mono" style={{ textAlign: "right" }}>{p ? p.positionen.length : "–"}</td>
-                        <td className="mono" style={{ textAlign: "right" }}>{p ? euro(p.parsedSumme) : "–"}</td>
+                        <td className="mono" style={{ textAlign: "right" }}>{p ? euro(p.importSumme ?? p.parsedSumme) : "–"}</td>
                         <td style={{ fontSize: 12.5 }}>{status}</td>
                       </tr>
                     );
@@ -415,7 +454,7 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
 
       {/* ---------------- Filter ---------------- */}
       <div style={{ ...card, padding: "14px 18px" }}>
-        <div className="tank-filter-grid" style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 10 }}>
+        <div className="tank-filter-grid" style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 10 }}>
           <div>
             <label>Jahr</label>
             <select value={f.jahr} onChange={(e) => setF({ ...f, jahr: e.target.value })}>
@@ -447,6 +486,14 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
             </select>
           </div>
           <div>
+            <label>Karte (Liste)</label>
+            <select value={f.quelle} onChange={(e) => setF({ ...f, quelle: e.target.value })}>
+              <option value="ALLE">Alle</option>
+              <option value="tankpool">Tankpool</option>
+              <option value="shell">Shell</option>
+            </select>
+          </div>
+          <div>
             <label>Datum von</label>
             <input type="date" value={f.von} onChange={(e) => setF({ ...f, von: e.target.value })} />
           </div>
@@ -456,7 +503,7 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
           </div>
         </div>
         <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-          <button className="ghost" onClick={() => setF({ jahr: String(heute.getFullYear()), monat: "ALLE", lkw: "ALLE", kategorie: "ALLE", von: "", bis: "" })}>Filter zurücksetzen</button>
+          <button className="ghost" onClick={() => setF({ jahr: String(heute.getFullYear()), monat: "ALLE", lkw: "ALLE", kategorie: "ALLE", quelle: "ALLE", von: "", bis: "" })}>Filter zurücksetzen</button>
           <button className="ghost" onClick={neuLaden} disabled={laden}><RefreshCw size={14} /> Neu laden</button>
           <button className="ghost" onClick={kmHolen} disabled={kmSync || laden} title="Tachostand zum Tankzeitpunkt aus routecontrol holen (nur Tankungen ohne KM-Stand)">
             {kmSync ? <Loader2 size={14} /> : <Gauge size={14} />} KM aus routecontrol holen{ohneKm > 0 ? ` (${ohneKm} offen)` : ""}
@@ -519,7 +566,8 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
             </div>
             <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginTop: 10 }}>
               km = Tachostand aus routecontrol von Tankung zu Tankung: l/100 km = getankte Liter ÷ km seit der vorherigen Tankung
-              (die erste Tankung im Zeitraum zählt nur als Startpunkt). „≈“ = kein Tachostand vorhanden, km aus dem Einsatzplan
+              (die erste Tankung im Zeitraum zählt nur als Startpunkt). Shell-Tankungen haben keinen KM-Stand; ihre Liter
+              zählen zur Strecke bis zur nächsten Tankpool-Tankung. „≈“ = kein Tachostand vorhanden, km aus dem Einsatzplan
               (Wochen anteilig nach Tagen{abgedecktBis && <>, nur bis {dmy(abgedecktBis)}</>}).
             </div>
             {ausgelassenRelevant.length > 0 && (
@@ -574,7 +622,7 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
               <table>
                 <thead style={{ position: "sticky", top: 0, background: CARD }}>
                   <tr>
-                    <th>Datum</th><th>Zeit</th><th>LKW</th><th>Station</th><th>Sorte</th>
+                    <th>Datum</th><th>Zeit</th><th>LKW</th><th>Karte</th><th>Station</th><th>Sorte</th>
                     <th style={{ textAlign: "right" }}>Menge</th><th style={{ textAlign: "right" }}>Preis netto</th><th style={{ textAlign: "right" }}>Wert netto</th>
                     <th style={{ textAlign: "right" }}>KM-Stand</th><th style={{ textAlign: "right" }}>km seit letzter</th><th>Rechnung</th>
                   </tr>
@@ -585,19 +633,22 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
                       <td className="mono">{dmy(t.datum)}</td>
                       <td className="mono">{t.zeit}</td>
                       <td className="mono">{t.lkw}</td>
+                      <td><KarteBadge quelle={t.quelle} /></td>
                       <td>{t.station}</td>
                       <td>{t.kategorie === "neben" ? t.sorte : KATEGORIE_LABEL[t.kategorie]}</td>
                       <td className="mono" style={{ textAlign: "right" }}>{dez(t.menge)} {t.einheit}</td>
                       <td className="mono" style={{ textAlign: "right" }}>{t.einheit === "L" ? dez(t.preis, 4) : euro(t.preis)}</td>
                       <td className="mono" style={{ textAlign: "right" }}>{euro(t.wert)}</td>
-                      <td className="mono" style={{ textAlign: "right" }} title={t.kmRc ? "Tachostand routecontrol" + (t.kmBeleg ? ` · an der Säule eingegeben: ${t.kmBeleg.toLocaleString("de-DE")}` : "") : t.kmBeleg ? "an der Säule eingegeben" : KM_STATUS[t.kmRcStatus] || "noch nicht abgerufen"}>
+                      <td className="mono" style={{ textAlign: "right" }} title={t.quelle === "shell" ? "Shell: kein KM-Stand (Liter zählen zur Strecke bis zur nächsten Tankpool-Tankung)" : t.kmRc ? "Tachostand routecontrol" + (t.kmBeleg ? ` · an der Säule eingegeben: ${t.kmBeleg.toLocaleString("de-DE")}` : "") : t.kmBeleg ? "an der Säule eingegeben" : KM_STATUS[t.kmRcStatus] || "noch nicht abgerufen"}>
                         {t.kmRc ? t.kmRc.toLocaleString("de-DE") : t.kmBeleg ? <span style={{ color: TEXT_MUTED }}>{t.kmBeleg.toLocaleString("de-DE")}*</span> : <span style={{ color: TEXT_MUTED }}>–</span>}
                       </td>
-                      <td className="mono" style={{ textAlign: "right", color: MARINE }}>{t.kmSeit ? t.kmSeit.toLocaleString("de-DE") : ""}</td>
+                      <td className="mono" style={{ textAlign: "right", color: MARINE }} title={t.shellL ? `inkl. ${dez(t.shellL)} L Shell-Tankung(en) auf dieser Strecke` : undefined}>
+                        {t.kmSeit ? t.kmSeit.toLocaleString("de-DE") : ""}{t.shellL ? <span style={{ color: "#7A5B00" }}> *</span> : null}
+                      </td>
                       <td className="mono" style={{ fontSize: 12, color: TEXT_MUTED }}>{t.rechnungNr}</td>
                     </tr>
                   ))}
-                  {liste.length === 0 && <tr><td colSpan={11} style={{ color: TEXT_MUTED }}>Keine Einträge.</td></tr>}
+                  {liste.length === 0 && <tr><td colSpan={12} style={{ color: TEXT_MUTED }}>Keine Einträge.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -611,13 +662,14 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
             {zeigeRechnungen && (
               <div style={{ overflowX: "auto", marginTop: 12 }}>
                 <table>
-                  <thead><tr><th>Rechnung</th><th>Datum</th><th>Art</th><th style={{ textAlign: "right" }}>Summe netto</th><th>Datei</th><th>importiert</th><th></th></tr></thead>
+                  <thead><tr><th>Karte</th><th>Rechnung</th><th>Datum</th><th>Art</th><th style={{ textAlign: "right" }}>Summe netto</th><th>Datei</th><th>importiert</th><th></th></tr></thead>
                   <tbody>
                     {rechnungen.map((r) => (
                       <tr key={r.rechnungNr}>
+                        <td><KarteBadge quelle={r.quelle} /></td>
                         <td className="mono">{r.rechnungNr}</td>
                         <td className="mono">{dmy(r.datum)}</td>
-                        <td>{r.typ === "sammel" ? "Tankungen" : "Einzelrechnung"}</td>
+                        <td>{{ sammel: "Tankungen", einzel: "Einzelrechnung", gebuehren: "Service-Gebühren" }[r.typ] || r.typ}</td>
                         <td className="mono" style={{ textAlign: "right" }}>{euro(r.summe)}</td>
                         <td style={{ fontSize: 12, color: TEXT_MUTED }}>{r.dateiname}</td>
                         <td className="mono" style={{ fontSize: 12, color: TEXT_MUTED }}>{r.importiertAm ? dmy(r.importiertAm.slice(0, 10)) : ""}</td>
