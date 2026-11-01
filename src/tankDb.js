@@ -21,6 +21,8 @@ const fromDb = (r) => ({
   preis: num(r.preis_netto),
   wert: num(r.wert_netto) || 0,
   kmBeleg: r.km_beleg,
+  kmRc: r.km_rc,
+  kmRcStatus: r.km_rc_status,
 });
 
 // Paginiert (Supabase liefert max. 1000 Zeilen pro Abfrage).
@@ -91,4 +93,24 @@ export async function importTankpoolRechnung(parsed) {
 export async function deleteTankpoolRechnung(rechnungNr) {
   const { error } = await supabase.from("tankpool_rechnungen").delete().eq("rechnung_nr", rechnungNr);
   if (error) throw error;
+}
+
+// Tachostand zum Tankzeitpunkt aus routecontrol holen (Edge Function
+// routecontrol-tank-km) - für alle Tankungen ohne Ergebnis. Die Funktion
+// arbeitet pro Aufruf max. 40 LKW-Tage ab, daher so lange wiederholen, bis
+// nichts mehr offen ist.
+export async function syncTankKm() {
+  const summe = { ok: 0, keine_fahrten: 0, kein_fahrzeug: 0, fehler: 0 };
+  for (let runde = 0; runde < 15; runde++) {
+    const { data, error } = await supabase.functions.invoke("routecontrol-tank-km", { body: { maxTage: 40 } });
+    if (error) {
+      let msg = error.message;
+      try { const b = await error.context.json(); if (b?.fehler) msg = b.fehler; } catch { /* */ }
+      throw new Error(msg);
+    }
+    if (!data || data.ok === false) throw new Error(data?.fehler || "Unbekannter Fehler");
+    for (const k of Object.keys(summe)) summe[k] += data.ergebnis?.[k] || 0;
+    if (!data.restTage) break;
+  }
+  return summe;
 }

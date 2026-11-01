@@ -8,7 +8,7 @@
 // die km gefahren werden - über einen Monat oder ein Jahr gleicht sich das aus.
 
 import { useEffect, useMemo, useState } from "react";
-import { Upload, Loader2, Trash2, RefreshCw, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Upload, Loader2, Trash2, RefreshCw, CheckCircle2, AlertTriangle, Gauge } from "lucide-react";
 import { parseTankpoolPdf } from "./tankpoolParser";
 import * as tdb from "./tankDb";
 
@@ -25,6 +25,11 @@ const SUCCESS_BG = "#E7F6EF";
 const WARN_BG = "#FDF1DD";
 
 const MONATE = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
+const KM_STATUS = {
+  keine_fahrten: "routecontrol: keine Fahrten um den Tankzeitpunkt",
+  kein_fahrzeug: "Fahrzeug nicht in routecontrol",
+  fehler: "Abruf fehlgeschlagen - erneut versuchen",
+};
 const KATEGORIE_LABEL = { diesel: "Diesel", adblue: "AdBlue", neben: "Nebenkosten" };
 
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -84,15 +89,74 @@ function kmJeLkw(wochen, { start, ende }) {
   return map;
 }
 
+// Verbrauch "von Tankung zu Tankung" mit dem Tachostand (routecontrol, km_rc):
+// Diesel-Zeilen je LKW nach Zeit sortieren; aufeinanderfolgende Zeilen, die
+// weniger als 30 km auseinanderliegen, sind EIN Tankstopp (zwei Tanks bzw.
+// Wechsel der Zapfsäule). Für jeden
+// Stopp: km seit dem vorherigen Stopp; die dort getankten Liter gehören zu
+// genau dieser Strecke. Erster Stopp eines LKW zählt nicht (keine Strecke
+// davor). Sprünge über 6.000 km oder rückwärts gelten als Datenfehler.
+const MAX_KM_ZWISCHEN_TANKUNGEN = 6000;
+function mitTachoStrecken(daten) {
+  const proLkw = {};
+  for (const t of daten) {
+    if (t.kategorie === "diesel" && t.kmRc) (proLkw[t.lkw] = proLkw[t.lkw] || []).push(t);
+  }
+  const info = {}; // id -> { kmSeit, tachoKm, tachoL, tachoDE }
+  for (const rows of Object.values(proLkw)) {
+    rows.sort((a, b) => (a.datum + a.zeit).localeCompare(b.datum + b.zeit));
+    const stopps = [];
+    for (const t of rows) {
+      const letzter = stopps[stopps.length - 1];
+      if (letzter && Math.abs(t.kmRc - letzter.kmLetzt) < 30) { letzter.rows.push(t); letzter.kmLetzt = t.kmRc; }
+      else stopps.push({ km: t.kmRc, kmLetzt: t.kmRc, rows: [t] });
+    }
+    for (let i = 1; i < stopps.length; i++) {
+      const delta = stopps[i].km - stopps[i - 1].kmLetzt;
+      if (delta <= 0 || delta > MAX_KM_ZWISCHEN_TANKUNGEN) continue;
+      stopps[i].rows.forEach((t, j) => {
+        info[t.id] = { kmSeit: j === 0 ? delta : null, tachoKm: j === 0 ? delta : 0, tachoL: t.menge || 0, tachoDE: t.wert };
+      });
+    }
+  }
+  return daten.map((t) => (info[t.id] ? { ...t, ...info[t.id] } : t));
+}
+
 function summiere(liste) {
-  const s = { tankungen: 0, dieselL: 0, dieselE: 0, adblueL: 0, adblueE: 0, nebenE: 0, gesamt: 0 };
+  const s = { tankungen: 0, dieselL: 0, dieselE: 0, adblueL: 0, adblueE: 0, nebenE: 0, gesamt: 0, tachoKm: 0, tachoL: 0, tachoDE: 0 };
   for (const t of liste) {
     s.gesamt += t.wert;
+    s.tachoKm += t.tachoKm || 0;
+    s.tachoL += t.tachoL || 0;
+    s.tachoDE += t.tachoDE || 0;
     if (t.kategorie === "diesel") { s.dieselL += t.menge || 0; s.dieselE += t.wert; s.tankungen++; }
     else if (t.kategorie === "adblue") { s.adblueL += t.menge || 0; s.adblueE += t.wert; }
     else s.nebenE += t.wert;
   }
   return s;
+}
+
+// km/Liter-Basis je LKW: Tacho-Strecken, wenn vorhanden - sonst (z. B. LKW
+// ohne routecontrol) Wochen-KM aus dem Einsatzplan mit allen Dieselmengen.
+function kennzahl(s, kmEinsatz) {
+  const k = s.tachoKm > 0
+    ? { km: s.tachoKm, liter: s.tachoL, dieselE: s.tachoDE, quelle: "tacho" }
+    : { km: kmEinsatz || 0, liter: s.dieselL, dieselE: s.dieselE, quelle: "einsatzplan" };
+  k.kosten = k.dieselE + s.adblueE + s.nebenE;
+  return k;
+}
+function auswerten(rows, lkwListe, kmMap) {
+  const lkwRows = lkwListe
+    .map((p) => {
+      const s = summiere(rows.filter((t) => t.lkw === p));
+      return { lkw: p, ...s, k: kennzahl(s, kmMap[p]) };
+    })
+    .filter((r) => r.gesamt !== 0);
+  const tot = { km: 0, liter: 0, kosten: 0, fallback: lkwRows.some((r) => r.k.quelle === "einsatzplan" && r.k.km > 0) };
+  for (const r of lkwRows) {
+    if (r.k.km > 0) { tot.km += r.k.km; tot.liter += r.k.liter; tot.kosten += r.k.kosten; }
+  }
+  return { lkwRows, ...tot };
 }
 
 function Kpi({ label, value, sub }) {
@@ -176,7 +240,16 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
     }
     setImportiere(false);
     setVorschau([]);
-    setMeldung({ ok: fehlerListe.length === 0, text: `${n} Rechnung(en) mit ${pos} Positionen übernommen.` + (fehlerListe.length ? ` Fehler: ${fehlerListe.join("; ")}` : "") });
+    const text = `${n} Rechnung(en) mit ${pos} Positionen übernommen.` + (fehlerListe.length ? ` Fehler: ${fehlerListe.join("; ")}` : "");
+    setMeldung({ ok: fehlerListe.length === 0, text: text + (n > 0 ? " KM-Stände werden aus routecontrol geholt …" : "") });
+    if (n > 0) {
+      try {
+        const r = await tdb.syncTankKm();
+        setMeldung({ ok: fehlerListe.length === 0, text: `${text} KM-Stände aus routecontrol: ${r.ok} ermittelt.` });
+      } catch (err) {
+        setMeldung({ ok: false, text: `${text} KM-Abruf aus routecontrol fehlgeschlagen (${err.message || err}) – später per Button „KM aus routecontrol holen“ nachholen.` });
+      }
+    }
     neuLaden();
   }
 
@@ -202,10 +275,11 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
     return [...fleetPlates, ...andere];
   }, [daten, fleetPlates]);
 
+  const datenMitKm = useMemo(() => mitTachoStrecken(daten), [daten]);
   const zr = useMemo(() => zeitraum(f), [f]);
   const imZeitraum = useMemo(
-    () => daten.filter((t) => (!zr.start || t.datum >= zr.start) && (!zr.ende || t.datum <= zr.ende) && (f.lkw === "ALLE" || t.lkw === f.lkw)),
-    [daten, zr, f.lkw]
+    () => datenMitKm.filter((t) => (!zr.start || t.datum >= zr.start) && (!zr.ende || t.datum <= zr.ende) && (f.lkw === "ALLE" || t.lkw === f.lkw)),
+    [datenMitKm, zr, f.lkw]
   );
   // Tankdaten reichen nur bis zum Ende der letzten Sammelrechnung - km danach
   // dürfen nicht mitzählen, sonst wäre der Verbrauch zu niedrig.
@@ -226,21 +300,10 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
   }), [wochenKm, zr, f.lkw, abgedecktBis]);
 
   const gesamt = useMemo(() => summiere(imZeitraum), [imZeitraum]);
-  // km nur für LKW zählen, für die es im Zeitraum auch Tankdaten gibt bzw. die
-  // gefiltert sind - sonst würde ein LKW ohne Tankkarte den Schnitt verzerren.
-  const lkwMitTank = new Set(imZeitraum.filter((t) => t.kategorie === "diesel").map((t) => t.lkw));
-  const kmGesamt = Object.entries(km)
-    .filter(([p]) => (f.lkw === "ALLE" ? lkwMitTank.has(p) : p === f.lkw))
-    .reduce((s, [, v]) => s + v, 0);
-
-  const proLkw = useMemo(() => {
-    return lkwListe
-      .map((p) => {
-        const s = summiere(imZeitraum.filter((t) => t.lkw === p));
-        return { lkw: p, ...s, km: km[p] || 0 };
-      })
-      .filter((r) => r.gesamt !== 0);
-  }, [lkwListe, imZeitraum, km]);
+  const ausw = useMemo(() => auswerten(imZeitraum, lkwListe, km), [imZeitraum, lkwListe, km]);
+  const proLkw = ausw.lkwRows;
+  // Einsatzplan-Hinweis nur für LKW, die mangels Tachostand mit Einsatzplan-km rechnen
+  const ausgelassenRelevant = ausgelassen.filter((w) => proLkw.some((r) => r.lkw === w.lkw && r.k.quelle === "einsatzplan"));
 
   const proMonat = useMemo(() => {
     const map = {};
@@ -251,13 +314,26 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
     return Object.keys(map).sort().reverse().map((k) => {
       const [j, m] = k.split("-").map(Number);
       const mz = { start: `${k}-01`, ende: isoOf(new Date(j, m, 0)) };
-      const kmM = kmJeLkw(wochenKm || [], kappe(mz));
-      const s = summiere(map[k]);
-      const tankLkw = new Set(map[k].filter((t) => t.kategorie === "diesel").map((t) => t.lkw));
-      const kmSum = Object.entries(kmM).filter(([p]) => (f.lkw === "ALLE" ? tankLkw.has(p) : p === f.lkw)).reduce((a, [, v]) => a + v, 0);
-      return { monat: `${MONATE[m - 1]} ${j}`, ...s, km: kmSum };
+      const a = auswerten(map[k], lkwListe, kmJeLkw(wochenKm || [], kappe(mz)));
+      return { monat: `${MONATE[m - 1]} ${j}`, ...summiere(map[k]), km: a.km, liter: a.liter, kosten: a.kosten, fallback: a.fallback };
     });
-  }, [imZeitraum, wochenKm, f.lkw, abgedecktBis]);
+  }, [imZeitraum, lkwListe, wochenKm, abgedecktBis]);
+
+  // KM-Stände aus routecontrol nachladen (für Tankungen ohne Ergebnis)
+  const [kmSync, setKmSync] = useState(false);
+  const ohneKm = daten.filter((t) => t.zeit && !t.kmRcStatus).length;
+  async function kmHolen() {
+    setKmSync(true);
+    setMeldung(null);
+    try {
+      const r = await tdb.syncTankKm();
+      setMeldung({ ok: true, text: `KM-Stände aus routecontrol: ${r.ok} ermittelt` + (r.keine_fahrten ? `, ${r.keine_fahrten} ohne Fahrten` : "") + (r.kein_fahrzeug ? `, ${r.kein_fahrzeug} Fahrzeug nicht in routecontrol` : "") + (r.fehler ? `, ${r.fehler} Fehler` : "") + "." });
+    } catch (err) {
+      setMeldung({ ok: false, text: "KM-Abruf fehlgeschlagen: " + (err.message || err) });
+    }
+    setKmSync(false);
+    neuLaden();
+  }
 
   const liste = useMemo(
     () => imZeitraum
@@ -382,6 +458,9 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
         <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
           <button className="ghost" onClick={() => setF({ jahr: String(heute.getFullYear()), monat: "ALLE", lkw: "ALLE", kategorie: "ALLE", von: "", bis: "" })}>Filter zurücksetzen</button>
           <button className="ghost" onClick={neuLaden} disabled={laden}><RefreshCw size={14} /> Neu laden</button>
+          <button className="ghost" onClick={kmHolen} disabled={kmSync || laden} title="Tachostand zum Tankzeitpunkt aus routecontrol holen (nur Tankungen ohne KM-Stand)">
+            {kmSync ? <Loader2 size={14} /> : <Gauge size={14} />} KM aus routecontrol holen{ohneKm > 0 ? ` (${ohneKm} offen)` : ""}
+          </button>
         </div>
       </div>
 
@@ -395,8 +474,8 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
             <Kpi label="Ø Dieselpreis netto" value={gesamt.dieselL > 0 ? `${dez(gesamt.dieselE / gesamt.dieselL, 3)} €/L` : "–"} />
             <Kpi label="AdBlue" value={liter(gesamt.adblueL)} sub={euro(gesamt.adblueE)} />
             <Kpi label="Kosten gesamt netto" value={euro(gesamt.gesamt)} sub={gesamt.nebenE ? `davon Nebenkosten ${euro(gesamt.nebenE)}` : null} />
-            <Kpi label="Ø Verbrauch" value={l100(gesamt.dieselL, kmGesamt) ? `${dez(l100(gesamt.dieselL, kmGesamt), 1)} l/100 km` : "–"} sub={kmGesamt > 0 ? `${Math.round(kmGesamt).toLocaleString("de-DE")} km laut Einsatzplan` : "keine km im Zeitraum"} />
-            <Kpi label="Tankkosten pro km" value={proKm(gesamt.gesamt, kmGesamt) ? `${dez(proKm(gesamt.gesamt, kmGesamt), 3)} €/km` : "–"} sub="Diesel + AdBlue + Nebenkosten" />
+            <Kpi label="Ø Verbrauch" value={l100(ausw.liter, ausw.km) ? `${dez(l100(ausw.liter, ausw.km), 1)} l/100 km` : "–"} sub={ausw.km > 0 ? `${Math.round(ausw.km).toLocaleString("de-DE")} km lt. Tacho${ausw.fallback ? " (teils Einsatzplan)" : ""}` : "keine km im Zeitraum"} />
+            <Kpi label="Tankkosten pro km" value={proKm(ausw.kosten, ausw.km) ? `${dez(proKm(ausw.kosten, ausw.km), 3)} €/km` : "–"} sub="Diesel + AdBlue + Nebenkosten" />
           </div>
 
           {/* ---------------- Je LKW ---------------- */}
@@ -427,9 +506,11 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
                       <td className="mono" style={{ textAlign: "right" }}>{euro(r.adblueE)}</td>
                       <td className="mono" style={{ textAlign: "right" }}>{r.nebenE ? euro(r.nebenE) : "–"}</td>
                       <td className="mono" style={{ textAlign: "right", fontWeight: 600 }}>{euro(r.gesamt)}</td>
-                      <td className="mono" style={{ textAlign: "right" }}>{r.km > 0 ? Math.round(r.km).toLocaleString("de-DE") : "–"}</td>
-                      <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: MARINE }}>{l100(r.dieselL, r.km) ? dez(l100(r.dieselL, r.km), 1) : "–"}</td>
-                      <td className="mono" style={{ textAlign: "right" }}>{proKm(r.gesamt, r.km) ? dez(proKm(r.gesamt, r.km), 3) : "–"}</td>
+                      <td className="mono" style={{ textAlign: "right" }} title={r.k.quelle === "tacho" ? "Tachostand routecontrol, von Tankung zu Tankung" : "kein Tachostand - Wochen-KM aus dem Einsatzplan"}>
+                        {r.k.km > 0 ? `${r.k.quelle === "einsatzplan" ? "≈ " : ""}${Math.round(r.k.km).toLocaleString("de-DE")}` : "–"}
+                      </td>
+                      <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: MARINE }}>{l100(r.k.liter, r.k.km) ? dez(l100(r.k.liter, r.k.km), 1) : "–"}</td>
+                      <td className="mono" style={{ textAlign: "right" }}>{proKm(r.k.kosten, r.k.km) ? dez(proKm(r.k.kosten, r.k.km), 3) : "–"}</td>
                     </tr>
                   ))}
                   {proLkw.length === 0 && <tr><td colSpan={12} style={{ color: TEXT_MUTED }}>Keine Tankvorgänge im gewählten Zeitraum.</td></tr>}
@@ -437,15 +518,15 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
               </table>
             </div>
             <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginTop: 10 }}>
-              km = Wochen-KM aus dem Einsatzplan (routecontrol); Wochen am Rand des Zeitraums zählen anteilig nach Tagen.
-              {abgedecktBis && <> Tankrechnungen liegen bis <b>{dmy(abgedecktBis)}</b> vor – km danach werden nicht mitgezählt. </>}
-              l/100 km ist deshalb ein Näherungswert – über Monate gerechnet aussagekräftiger als für einzelne Wochen.
+              km = Tachostand aus routecontrol von Tankung zu Tankung: l/100 km = getankte Liter ÷ km seit der vorherigen Tankung
+              (die erste Tankung im Zeitraum zählt nur als Startpunkt). „≈“ = kein Tachostand vorhanden, km aus dem Einsatzplan
+              (Wochen anteilig nach Tagen{abgedecktBis && <>, nur bis {dmy(abgedecktBis)}</>}).
             </div>
-            {ausgelassen.length > 0 && (
+            {ausgelassenRelevant.length > 0 && (
               <div style={{ fontSize: 12, color: AMBER_DARK, background: WARN_BG, borderRadius: 8, padding: "8px 12px", marginTop: 10 }}>
                 <AlertTriangle size={13} style={{ verticalAlign: -2 }} /> Nicht mitgezählt, weil die Wochen-KM im Einsatzplan unplausibel sind
                 (negativ oder über {MAX_WOCHEN_KM.toLocaleString("de-DE")} km) – bitte End-KM im Einsatzplan prüfen:{" "}
-                {ausgelassen.map((w) => `${w.lkw} KW${w.kw}/${w.jahr} (${w.wochenKm.toLocaleString("de-DE")} km)`).join(", ")}
+                {ausgelassenRelevant.map((w) => `${w.lkw} KW${w.kw}/${w.jahr} (${w.wochenKm.toLocaleString("de-DE")} km)`).join(", ")}
               </div>
             )}
           </div>
@@ -473,8 +554,8 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
                         <td className="mono" style={{ textAlign: "right" }}>{liter(r.adblueL)}</td>
                         <td className="mono" style={{ textAlign: "right", fontWeight: 600 }}>{euro(r.gesamt)}</td>
                         <td className="mono" style={{ textAlign: "right" }}>{r.km > 0 ? Math.round(r.km).toLocaleString("de-DE") : "–"}</td>
-                        <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: MARINE }}>{l100(r.dieselL, r.km) ? dez(l100(r.dieselL, r.km), 1) : "–"}</td>
-                        <td className="mono" style={{ textAlign: "right" }}>{proKm(r.gesamt, r.km) ? dez(proKm(r.gesamt, r.km), 3) : "–"}</td>
+                        <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: MARINE }}>{l100(r.liter, r.km) ? dez(l100(r.liter, r.km), 1) : "–"}</td>
+                        <td className="mono" style={{ textAlign: "right" }}>{proKm(r.kosten, r.km) ? dez(proKm(r.kosten, r.km), 3) : "–"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -495,7 +576,7 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
                   <tr>
                     <th>Datum</th><th>Zeit</th><th>LKW</th><th>Station</th><th>Sorte</th>
                     <th style={{ textAlign: "right" }}>Menge</th><th style={{ textAlign: "right" }}>Preis netto</th><th style={{ textAlign: "right" }}>Wert netto</th>
-                    <th style={{ textAlign: "right" }}>KM (Säule)</th><th>Rechnung</th>
+                    <th style={{ textAlign: "right" }}>KM-Stand</th><th style={{ textAlign: "right" }}>km seit letzter</th><th>Rechnung</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -509,11 +590,14 @@ export default function Tankvorgaenge({ fleet, wochenKm }) {
                       <td className="mono" style={{ textAlign: "right" }}>{dez(t.menge)} {t.einheit}</td>
                       <td className="mono" style={{ textAlign: "right" }}>{t.einheit === "L" ? dez(t.preis, 4) : euro(t.preis)}</td>
                       <td className="mono" style={{ textAlign: "right" }}>{euro(t.wert)}</td>
-                      <td className="mono" style={{ textAlign: "right", color: TEXT_MUTED }}>{t.kmBeleg ? t.kmBeleg.toLocaleString("de-DE") : ""}</td>
+                      <td className="mono" style={{ textAlign: "right" }} title={t.kmRc ? "Tachostand routecontrol" + (t.kmBeleg ? ` · an der Säule eingegeben: ${t.kmBeleg.toLocaleString("de-DE")}` : "") : t.kmBeleg ? "an der Säule eingegeben" : KM_STATUS[t.kmRcStatus] || "noch nicht abgerufen"}>
+                        {t.kmRc ? t.kmRc.toLocaleString("de-DE") : t.kmBeleg ? <span style={{ color: TEXT_MUTED }}>{t.kmBeleg.toLocaleString("de-DE")}*</span> : <span style={{ color: TEXT_MUTED }}>–</span>}
+                      </td>
+                      <td className="mono" style={{ textAlign: "right", color: MARINE }}>{t.kmSeit ? t.kmSeit.toLocaleString("de-DE") : ""}</td>
                       <td className="mono" style={{ fontSize: 12, color: TEXT_MUTED }}>{t.rechnungNr}</td>
                     </tr>
                   ))}
-                  {liste.length === 0 && <tr><td colSpan={10} style={{ color: TEXT_MUTED }}>Keine Einträge.</td></tr>}
+                  {liste.length === 0 && <tr><td colSpan={11} style={{ color: TEXT_MUTED }}>Keine Einträge.</td></tr>}
                 </tbody>
               </table>
             </div>
