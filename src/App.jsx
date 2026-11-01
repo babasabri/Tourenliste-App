@@ -13,6 +13,7 @@ import * as db from "./db";
 import { parseGutschriftPdf } from "./gutschriftParser";
 import { supabase } from "./supabaseClient";
 import FrachtbriefEingang from "./FrachtbriefEingang";
+import Tankvorgaenge from "./Tankvorgaenge";
 // Export-Bibliotheken (jsPDF, ExcelJS) sind vergleichsweise groß - werden per
 // dynamic import() erst geladen, wenn der Export-Tab tatsächlich genutzt wird,
 // statt das Hauptbundle für alle Nutzer aufzublähen (siehe handleExportPdf/
@@ -2219,6 +2220,7 @@ export default function TourenApp() {
     { id: "suche", label: "Suche", icon: SearchIcon },
     { id: "reklamationen", label: "Reklamationen", icon: AlertTriangle },
     { id: "gutschriften", label: "Gutschriften", icon: Receipt },
+    { id: "tanken", label: "Tankvorgänge", icon: Fuel },
     { id: "einsatz", label: "Einsatzplan", icon: CalendarClock },
     { id: "stamm", label: "Stammdaten", icon: Users },
     { id: "import", label: "Import", icon: Upload },
@@ -2906,6 +2908,13 @@ export default function TourenApp() {
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {tab === "tanken" && (
+          <div>
+            <PageHeading icon={Fuel} title="Tankvorgänge" subtitle="Tankpool-Rechnungen, Verbrauch und Tankkosten je LKW" />
+            <Tankvorgaenge fleet={fleet} wochenKm={einsatzHistory} />
           </div>
         )}
 

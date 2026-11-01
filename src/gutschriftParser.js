@@ -79,7 +79,7 @@ function parseGermanDate(s) {
 // mit einer zur Lücke proportionalen Anzahl Leerzeichen wieder zusammenfügen
 // - das reproduziert grob das Verhalten von "pdftotext -layout", das wir an
 // der echten Gutschrift als zuverlässig geprüft haben.
-async function extractLayoutLines(pdf) {
+export async function extractLayoutLines(pdf) {
   const lines = [];
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
