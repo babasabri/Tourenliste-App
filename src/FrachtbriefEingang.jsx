@@ -1,15 +1,18 @@
-// Tab "Frachtbrief-Eingang": alle Frachtbriefe, die Fahrer über die
-// Fahrer-App (/fahrer/) geschickt haben - schon von der KI ausgelesen.
-// "Tour anlegen" öffnet "Neue Tour" vorausgefüllt (gleiche Logik wie
-// "Frachtbrief hochladen"); nach dem Speichern wird der Brief erledigt und
-// mit der Tour verknüpft (das macht App.jsx).
+// Tab "Frachtbrief-Eingang": Arbeitsansicht für die Frachtbriefe aus der
+// Fahrer-App (/fahrer/).
+//   links:  kompakte Liste + die "Neue Tour"-Maske (kommt als `formular` aus App.jsx)
+//   rechts: Vorschau des gewählten Frachtbriefs, bleibt beim Scrollen stehen
+// Klick auf einen neuen Brief füllt die Maske aus (onTourAnlegen). Nach dem
+// Speichern erledigt App.jsx den Brief und erhöht reloadToken - dann wird
+// automatisch der nächste neue Brief gewählt.
 //
-// Unten: Fahrer-Zugänge (PIN je Fahrer) verwalten.
+// Unten (aufklappbar): Fahrer-Zugänge (PIN je Fahrer) verwalten.
 
-import { useEffect, useMemo, useState } from "react";
-import { RefreshCw, FileText, Loader2, PlusCircle, Eye, RotateCcw, Archive, KeyRound, Copy, Smartphone, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { RefreshCw, FileText, Loader2, Eye, RotateCcw, Archive, KeyRound, Copy, Smartphone, CheckCircle2 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 import * as db from "./db";
+import PdfVorschau from "./PdfVorschau";
 
 const MARINE = "#0F2A43";
 const AMBER_DARK = "#8A5A10";
@@ -59,14 +62,16 @@ function AusleseChip({ row }) {
   return <Chip bg="#E3F1E9" fg={SUCCESS}>vollständig</Chip>;
 }
 
-export default function FrachtbriefEingang({ drivers, fleet, tours, onTourAnlegen, onCountChange }) {
+export default function FrachtbriefEingang({ drivers, fleet, tours, formular, aktiveId, formFrei, reloadToken, onTourAnlegen, onCountChange }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [fehler, setFehler] = useState("");
   const [filter, setFilter] = useState("neu");
-  const [auswahl, setAuswahl] = useState(null); // Zeile in der Vorschau
-  const [vorschauUrl, setVorschauUrl] = useState(null);
+  const [ansichtId, setAnsichtId] = useState(null); // Brief in der Vorschau
   const [busyId, setBusyId] = useState(null);
+  const autoWahl = useRef(true); // nach dem Laden automatisch ersten neuen Brief wählen?
+  const formFreiRef = useRef(formFrei);
+  formFreiRef.current = formFrei;
 
   async function laden() {
     setFehler("");
@@ -74,8 +79,18 @@ export default function FrachtbriefEingang({ drivers, fleet, tours, onTourAnlege
       .from("frachtbrief_eingang").select("*").order("created_at", { ascending: false }).limit(300);
     setLoading(false);
     if (error) { setFehler("Eingang konnte nicht geladen werden."); return; }
-    setRows(data || []);
-    onCountChange?.((data || []).filter((r) => r.status === "neu").length);
+    const liste = data || [];
+    setRows(liste);
+    onCountChange?.(liste.filter((r) => r.status === "neu").length);
+    // Beim Öffnen und nach jedem Speichern: nächsten neuen, fertig ausgelesenen
+    // Brief in die Maske holen - aber nie eine angefangene Eingabe überschreiben.
+    if (autoWahl.current) {
+      autoWahl.current = false;
+      if (formFreiRef.current) {
+        const naechster = [...liste].reverse().find((r) => r.status === "neu" && r.auslese_status === "fertig");
+        if (naechster) waehlen(naechster, true);
+      }
+    }
   }
 
   useEffect(() => {
@@ -85,28 +100,36 @@ export default function FrachtbriefEingang({ drivers, fleet, tours, onTourAnlege
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auswahl aktuell halten, wenn die Liste neu geladen wurde (z. B. Auslesen fertig)
+  // App.jsx meldet "gespeichert" -> neu laden und nächsten Brief wählen
   useEffect(() => {
-    if (auswahl) {
-      const neu = rows.find((r) => r.id === auswahl.id);
-      if (neu && neu !== auswahl) setAuswahl(neu);
-    }
-  }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!reloadToken) return;
+    autoWahl.current = true;
+    laden();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadToken]);
 
-  async function signedUrl(row) {
-    const { data, error } = await supabase.storage.from("frachtbriefe").createSignedUrl(row.datei_pfad, 3600);
-    if (error) throw error;
-    return data.signedUrl;
-  }
+  // Vorschau folgt dem Brief, der gerade in der Maske ist
+  useEffect(() => { if (aktiveId) setAnsichtId(aktiveId); }, [aktiveId]);
 
-  async function zeigen(row) {
-    setAuswahl(row);
-    setVorschauUrl(null);
-    try { setVorschauUrl(await signedUrl(row)); } catch { setFehler("Vorschau konnte nicht geladen werden."); }
+  const ansicht = rows.find((r) => r.id === ansichtId) || null;
+
+
+  // Klick auf eine Zeile: Vorschau zeigen; neue Briefe zusätzlich in die Maske
+  function waehlen(row, automatisch = false) {
+    setAnsichtId(row.id);
+    if (row.status !== "neu" || row.id === aktiveId) return;
+    if (row.auslese_status === "laeuft") return; // erst nach dem Auslesen übernehmen
+    if (!automatisch && !formFreiRef.current &&
+      !window.confirm("In der Maske ist noch eine ungespeicherte Tour. Verwerfen und diesen Frachtbrief übernehmen?")) return;
+    onTourAnlegen(row);
   }
 
   async function oeffnen(row) {
-    try { window.open(await signedUrl(row), "_blank", "noopener"); } catch { setFehler("PDF konnte nicht geöffnet werden."); }
+    // Fenster sofort öffnen (sonst blockt der Popup-Blocker), Adresse nachladen
+    const w = window.open("", "_blank");
+    const { data, error } = await supabase.storage.from("frachtbriefe").createSignedUrl(row.datei_pfad, 3600);
+    if (error || !data) { if (w) w.close(); setFehler("PDF konnte nicht geöffnet werden."); return; }
+    if (w) w.location.href = data.signedUrl; else window.open(data.signedUrl, "_blank", "noopener");
   }
 
   async function setStatus(row, status) {
@@ -143,133 +166,138 @@ export default function FrachtbriefEingang({ drivers, fleet, tours, onTourAnlege
     verworfen: rows.filter((r) => r.status === "verworfen").length,
     alle: rows.length,
   }), [rows]);
-  const sichtbar = filter === "alle" ? rows : rows.filter((r) => r.status === filter);
+  // Neue Briefe: älteste zuerst (Reihenfolge des Abarbeitens), sonst neueste zuerst
+  const sichtbar = filter === "alle" ? rows
+    : filter === "neu" ? rows.filter((r) => r.status === "neu").slice().reverse()
+    : rows.filter((r) => r.status === filter);
   const tourById = useMemo(() => new Map(tours.map((t) => [t.id, t])), [tours]);
 
-  const th = { textAlign: "left", padding: "10px 9px", fontSize: 11.5, fontWeight: 600, color: TEXT_MUTED, borderBottom: `1px solid ${BORDER}`, whiteSpace: "nowrap" };
-  const td = { padding: "10px 9px", fontSize: 13, borderBottom: `1px solid ${BORDER}`, verticalAlign: "middle" };
+  const th = { textAlign: "left", padding: "8px 9px", fontSize: 11.5, fontWeight: 600, color: TEXT_MUTED, borderBottom: `1px solid ${BORDER}`, whiteSpace: "nowrap", position: "sticky", top: 0, background: CARD, zIndex: 1 };
+  const td = { padding: "8px 9px", fontSize: 13, borderBottom: `1px solid ${BORDER}`, verticalAlign: "middle" };
   const mono = { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 12.5 };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", gap: 4, padding: 4, background: "#E9EDF1", borderRadius: 10, flexWrap: "wrap" }}>
-          {[["neu", "Neu"], ["erledigt", "Erledigt"], ["verworfen", "Aussortiert"], ["alle", "Alle"]].map(([k, l]) => (
-            <button
-              key={k} type="button" onClick={() => setFilter(k)}
-              style={{ border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: filter === k ? 600 : 500, cursor: "pointer", background: filter === k ? CARD : "transparent", color: filter === k ? MARINE : TEXT_MUTED, boxShadow: filter === k ? "0 1px 2px rgba(0,0,0,0.06)" : "none" }}
-            >
-              {l} ({counts[k]})
-            </button>
-          ))}
-        </div>
-        <button type="button" className="ghost" onClick={() => { setLoading(true); laden(); }}>
-          <RefreshCw size={14} /> Aktualisieren
-        </button>
-      </div>
-
-      {fehler && <div style={{ fontSize: 12.5, color: DANGER, background: DANGER_BG, borderRadius: 8, padding: "10px 14px" }}>{fehler}</div>}
-
       <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "flex-start" }}>
-        <div style={{ flex: "999 1 760px", minWidth: 0, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
-            <thead>
-              <tr>
-                <th style={th}>Eingang</th><th style={th}>Fahrer</th><th style={th}>LKW</th><th style={th}>Auftrags-Nr.</th>
-                <th style={th}>Container</th><th style={th}>Kunde</th><th style={th}>Auslesung</th><th style={{ ...th, textAlign: "right" }}>Aktion</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading && rows.length === 0 && (
-                <tr><td colSpan={8} style={{ ...td, color: TEXT_MUTED, textAlign: "center", padding: 28 }}>Lade …</td></tr>
-              )}
-              {!loading && sichtbar.length === 0 && (
-                <tr><td colSpan={8} style={{ ...td, color: TEXT_MUTED, textAlign: "center", padding: 28 }}>
-                  {filter === "neu" ? "Keine neuen Frachtbriefe. Sobald ein Fahrer etwas scannt, erscheint es hier." : "Keine Einträge."}
-                </td></tr>
-              )}
-              {sichtbar.map((r) => {
-                const e = r.extraktion || {};
-                const lkw = e.lkw || r.lkw || "";
-                const tour = r.tour_id ? tourById.get(r.tour_id) : null;
-                const aktiv = auswahl?.id === r.id;
-                return (
-                  <tr key={r.id} onClick={() => zeigen(r)} style={{ cursor: "pointer", background: aktiv ? "#FFF7EC" : undefined }}>
-                    <td style={{ ...td, whiteSpace: "nowrap" }}>
-                      {zeitText(r.created_at)}
-                      <div style={{ fontSize: 11, color: TEXT_MUTED }}>{r.seiten} Seite{r.seiten > 1 ? "n" : ""}</div>
-                    </td>
-                    <td style={{ ...td, fontWeight: 600 }}>{r.fahrer}</td>
-                    <td style={{ ...td, ...mono, whiteSpace: "nowrap" }}>{lkw || "–"}</td>
-                    <td style={{ ...td, ...mono }}>{e.auftragsNr || "–"}</td>
-                    <td style={{ ...td, ...mono, whiteSpace: "nowrap" }}>{e.containerNr || "–"}</td>
-                    <td style={td}>{e.kunde || "–"}</td>
-                    <td style={td}><AusleseChip row={r} /></td>
-                    <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }} onClick={(ev) => ev.stopPropagation()}>
-                      {r.status === "neu" && (
-                        <button type="button" className="primary" disabled={r.auslese_status === "laeuft" || busyId === r.id}
-                          onClick={() => onTourAnlegen(r)} style={{ padding: "6px 12px", fontSize: 12.5 }}>
-                          <PlusCircle size={13} /> Tour anlegen
-                        </button>
-                      )}
-                      {r.status === "erledigt" && (
-                        <span style={{ fontSize: 12, color: SUCCESS, fontWeight: 600 }}>
-                          {tour ? `Tour ${tour.auftragsNr || ""} angelegt` : "erledigt"}
-                        </span>
-                      )}
-                      {r.status === "verworfen" && <span style={{ fontSize: 12, color: TEXT_MUTED }}>aussortiert</span>}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        {/* ---------- links: Liste + Erfassungsmaske ---------- */}
+        <div style={{ flex: "1 1 530px", maxWidth: 680, minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", gap: 4, padding: 4, background: "#E9EDF1", borderRadius: 10, flexWrap: "wrap" }}>
+              {[["neu", "Neu"], ["erledigt", "Erledigt"], ["verworfen", "Aussortiert"], ["alle", "Alle"]].map(([k, l]) => (
+                <button
+                  key={k} type="button" onClick={() => setFilter(k)}
+                  style={{ border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, fontWeight: filter === k ? 600 : 500, cursor: "pointer", background: filter === k ? CARD : "transparent", color: filter === k ? MARINE : TEXT_MUTED, boxShadow: filter === k ? "0 1px 2px rgba(0,0,0,0.06)" : "none" }}
+                >
+                  {l} ({counts[k]})
+                </button>
+              ))}
+            </div>
+            <button type="button" className="ghost" onClick={() => { setLoading(true); laden(); }} style={{ padding: "6px 10px", fontSize: 12.5 }}>
+              <RefreshCw size={13} /> Aktualisieren
+            </button>
+          </div>
+
+          {fehler && <div style={{ fontSize: 12.5, color: DANGER, background: DANGER_BG, borderRadius: 8, padding: "10px 14px" }}>{fehler}</div>}
+
+          <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, maxHeight: 248, overflow: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+              <thead>
+                <tr>
+                  <th style={th}>Eingang</th><th style={th}>Fahrer</th><th style={th}>Auftrags-Nr.</th>
+                  <th style={th}>Kunde</th><th style={th}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading && rows.length === 0 && (
+                  <tr><td colSpan={5} style={{ ...td, color: TEXT_MUTED, textAlign: "center", padding: 22 }}>Lade …</td></tr>
+                )}
+                {!loading && sichtbar.length === 0 && (
+                  <tr><td colSpan={5} style={{ ...td, color: TEXT_MUTED, textAlign: "center", padding: 22 }}>
+                    {filter === "neu" ? "Alles erledigt. Sobald ein Fahrer etwas scannt, erscheint es hier." : "Keine Einträge."}
+                  </td></tr>
+                )}
+                {sichtbar.map((r) => {
+                  const e = r.extraktion || {};
+                  const tour = r.tour_id ? tourById.get(r.tour_id) : null;
+                  const inMaske = aktiveId === r.id;
+                  const inVorschau = ansichtId === r.id;
+                  return (
+                    <tr key={r.id} onClick={() => waehlen(r)}
+                      title={r.status === "neu" ? "In die Maske übernehmen" : "Original ansehen"}
+                      style={{ cursor: "pointer", background: inMaske ? "#FFF1DC" : inVorschau ? "#F4F6F9" : undefined, boxShadow: inMaske ? `inset 3px 0 0 ${AMBER_DARK}` : undefined }}>
+                      <td style={{ ...td, whiteSpace: "nowrap" }}>
+                        {zeitText(r.created_at)}
+                        <div style={{ fontSize: 11, color: TEXT_MUTED }}>{r.seiten} Seite{r.seiten > 1 ? "n" : ""}</div>
+                      </td>
+                      <td style={{ ...td, fontWeight: 600 }}>{r.fahrer}</td>
+                      <td style={{ ...td, ...mono }}>{e.auftragsNr || "–"}</td>
+                      <td style={{ ...td, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={e.kunde || ""}>{e.kunde || "–"}</td>
+                      <td style={td}>
+                        {inMaske && <Chip bg="#FBE3BF" fg={AMBER_DARK}>in Bearbeitung</Chip>}
+                        {!inMaske && r.status === "neu" && <AusleseChip row={r} />}
+                        {r.status === "erledigt" && <Chip bg="#E3F1E9" fg={SUCCESS}><CheckCircle2 size={11} /> {tour?.auftragsNr ? `Tour ${tour.auftragsNr}` : "erledigt"}</Chip>}
+                        {r.status === "verworfen" && <Chip bg="#EEF0F2" fg={TEXT_MUTED}>aussortiert</Chip>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div>{formular}</div>
         </div>
 
-        {auswahl && (
-        <div style={{ flex: "1 1 340px", minWidth: 0, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+        {/* ---------- rechts: Frachtbrief-Vorschau (bleibt stehen) ---------- */}
+        <div style={{ flex: "1 1 360px", minWidth: 0, position: "sticky", top: 12, alignSelf: "flex-start", height: "calc(100vh - 24px)", minHeight: 520, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 12, boxSizing: "border-box", display: "flex", flexDirection: "column", gap: 10 }}>
+          {!ansicht ? (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: TEXT_MUTED, fontSize: 13, textAlign: "center", padding: 20 }}>
+              <FileText size={28} style={{ marginBottom: 10 }} />
+              Hier erscheint der Frachtbrief.<br />Links einen Brief anklicken.
+            </div>
+          ) : (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                <div style={{ fontSize: 14, fontWeight: 600 }}>{auswahl.fahrer} · {zeitText(auswahl.created_at)}</div>
-                <button type="button" className="ghost" aria-label="Vorschau schließen" onClick={() => { setAuswahl(null); setVorschauUrl(null); }} style={{ padding: "4px 6px" }}>
-                  <X size={14} />
-                </button>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 13.5, fontWeight: 600 }}>
+                  {ansicht.fahrer} · {zeitText(ansicht.created_at)}
+                  {ansicht.lkw && <span style={{ ...mono, fontWeight: 400, color: TEXT_MUTED }}> · {ansicht.lkw}</span>}
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <button type="button" className="ghost" title="In neuem Fenster öffnen (größer)" onClick={() => oeffnen(ansicht)} style={{ padding: "4px 8px", fontSize: 12 }}><Eye size={12} /> Groß</button>
+                  <button type="button" className="ghost" disabled={busyId === ansicht.id} onClick={() => erneutAuslesen(ansicht)} style={{ padding: "4px 8px", fontSize: 12 }}>
+                    {busyId === ansicht.id ? <Loader2 size={12} /> : <RotateCcw size={12} />} Neu auslesen
+                  </button>
+                  {ansicht.status === "neu" ? (
+                    <button type="button" className="ghost" disabled={busyId === ansicht.id || aktiveId === ansicht.id} onClick={() => setStatus(ansicht, "verworfen")}
+                      title={aktiveId === ansicht.id ? "Erst die Maske abbrechen" : "z. B. doppelt geschickt oder kein Frachtbrief"} style={{ padding: "4px 8px", fontSize: 12 }}>
+                      <Archive size={12} /> Aussortieren
+                    </button>
+                  ) : (
+                    <button type="button" className="ghost" disabled={busyId === ansicht.id} onClick={() => setStatus(ansicht, "neu")} style={{ padding: "4px 8px", fontSize: 12 }}>
+                      <RotateCcw size={12} /> Zurück zu „Neu“
+                    </button>
+                  )}
+                </div>
               </div>
-              <div style={{ height: 460, borderRadius: 8, background: BG, border: `1px solid ${BORDER}`, overflow: "hidden" }}>
-                {vorschauUrl
-                  ? <iframe title="Frachtbrief" src={vorschauUrl} style={{ width: "100%", height: "100%", border: 0 }} />
-                  : <div style={{ padding: 30, textAlign: "center", color: TEXT_MUTED, fontSize: 13 }}>Lade Vorschau …</div>}
-              </div>
-              {auswahl.auslese_status === "fehler" && (
-                <div style={{ fontSize: 12, color: DANGER }}>Auslesen fehlgeschlagen: {auswahl.auslese_fehler}</div>
+              {ansicht.auslese_status === "fehler" && (
+                <div style={{ fontSize: 12, color: DANGER }}>Auslesen fehlgeschlagen: {ansicht.auslese_fehler}</div>
               )}
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                <button type="button" className="ghost" onClick={() => oeffnen(auswahl)}><Eye size={13} /> PDF öffnen</button>
-                <button type="button" className="ghost" disabled={busyId === auswahl.id} onClick={() => erneutAuslesen(auswahl)}>
-                  {busyId === auswahl.id ? <Loader2 size={13} /> : <RotateCcw size={13} />} Erneut auslesen
-                </button>
-                {auswahl.status === "neu" ? (
-                  <button type="button" className="ghost" disabled={busyId === auswahl.id} onClick={() => setStatus(auswahl, "verworfen")}
-                    title="z. B. doppelt geschickt oder kein Frachtbrief">
-                    <Archive size={13} /> Aussortieren
-                  </button>
-                ) : (
-                  <button type="button" className="ghost" disabled={busyId === auswahl.id} onClick={() => setStatus(auswahl, "neu")}>
-                    <RotateCcw size={13} /> Zurück zu „Neu“
-                  </button>
-                )}
+              <div style={{ flex: 1, minHeight: 0 }}>
+                <PdfVorschau key={ansicht.id} pfad={ansicht.datei_pfad} />
               </div>
             </>
+          )}
         </div>
-        )}
       </div>
-      {!auswahl && sichtbar.length > 0 && (
-        <div style={{ fontSize: 12, color: TEXT_MUTED, marginTop: -10, display: "flex", alignItems: "center", gap: 6 }}>
-          <FileText size={13} /> Zeile anklicken, um das Original-Foto zu sehen.
-        </div>
-      )}
 
-      <FahrerZugaenge drivers={drivers} />
+      <details style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "12px 20px" }}>
+        <summary style={{ cursor: "pointer", fontSize: 14, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
+          <KeyRound size={15} /> Fahrer-Zugänge &amp; Link für die Fahrer-App
+        </summary>
+        <div style={{ marginTop: 14 }}>
+          <FahrerZugaenge drivers={drivers} />
+        </div>
+      </details>
     </div>
   );
 }
@@ -324,11 +352,10 @@ function FahrerZugaenge({ drivers }) {
   const liste = drivers.filter((d) => d.name !== "Ersatzfahrer" || byName.has(d.name));
 
   return (
-    <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <div style={{ fontSize: 15, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}><KeyRound size={16} /> Fahrer-Zugänge</div>
-          <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginTop: 4, maxWidth: 560 }}>
+          <div style={{ fontSize: 12.5, color: TEXT_MUTED, maxWidth: 560 }}>
             Jeder Fahrer meldet sich in der Fahrer-App mit seinem Namen und einem PIN (4–6 Ziffern) an. Fahrer sehen nur ihre eigenen gesendeten Frachtbriefe, keine Touren oder Beträge.
             Nach 5 falschen Versuchen ist der Zugang 15 Minuten gesperrt.
           </div>

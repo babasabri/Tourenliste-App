@@ -23,7 +23,7 @@ const PDFJS_URL = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/+esm
 const PDFJS_WORKER_URL = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.mjs`;
 
 let pdfjsLibPromise = null;
-function loadPdfjs() {
+export function loadPdfjs() {
   if (!pdfjsLibPromise) {
     pdfjsLibPromise = import(/* @vite-ignore */ PDFJS_URL)
       .then((mod) => {

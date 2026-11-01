@@ -668,6 +668,7 @@ export default function TourenApp() {
   // für die Seitenleiste.
   const [eingangRow, setEingangRow] = useState(null);
   const [eingangNeu, setEingangNeu] = useState(0);
+  const [eingangReload, setEingangReload] = useState(0);
   // Hinweis unter dem Kunde-Feld ("Neue Tour"), woher die Vorbelegung stammt.
   const [kundeFillNote, setKundeFillNote] = useState(null); // { kunde, text }
   // Gutschriften-Abgleich: gsLoading während PDF-Auslesen+Abgleich,
@@ -1326,12 +1327,12 @@ export default function TourenApp() {
   // "Tour anlegen" im Frachtbrief-Eingang: Neue Tour mit den ausgelesenen
   // Daten öffnen. Gespeichert wird weiterhin erst nach Prüfung von Hand.
   function startTourFromEingang(row) {
-    setTab("neu");
     setTourStarted(true);
     setFbError("");
     setDupWarning(null);
     setKundeFillNote(null);
-    setSaveNote("");
+    // "Tour gespeichert." stehen lassen, wenn danach automatisch der nächste Brief kommt
+    setSaveNote((n) => (n === "Tour gespeichert." ? n : ""));
     setFormErrors([]);
     setEingangRow(row);
     if (row.extraktion) {
@@ -1342,9 +1343,8 @@ export default function TourenApp() {
       if (row.lkw && fleet.some((x) => x.plate === row.lkw)) f.lkw = row.lkw;
       setForm(f);
       setFbInfo(null);
-      setFbError("Dieser Frachtbrief wurde nicht automatisch ausgelesen - bitte Felder von Hand ausfüllen (Original im Eingang ansehen).");
+      setFbError("Dieser Frachtbrief wurde nicht automatisch ausgelesen - bitte Felder von Hand ausfüllen (Original rechts ansehen).");
     }
-    window.scrollTo(0, 0);
   }
 
   async function openEingangPdf() {
@@ -1523,7 +1523,7 @@ export default function TourenApp() {
         supabase.from("frachtbrief_eingang")
           .update({ status: "erledigt", tour_id: rec.id, erledigt_at: new Date().toISOString() })
           .eq("id", eingangRow.id)
-          .then(() => setEingangNeu((n) => Math.max(0, n - 1)));
+          .then(() => { setEingangNeu((n) => Math.max(0, n - 1)); setEingangReload((x) => x + 1); });
       }
       setEingangRow(null);
     });
@@ -2016,6 +2016,199 @@ export default function TourenApp() {
     }
     return { form: next, last };
   }
+
+  // Formular "Neue Tour" als Element, damit es sowohl im Tab "Neue Tour" als
+  // auch im Frachtbrief-Eingang (neben der Frachtbrief-Vorschau) erscheint.
+  const neueTourCard = (
+      <div className="neue-tour-card" style={{ maxWidth: 640, flex: "1 1 480px", background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 24 }}>
+        <div style={{ marginBottom: 18, padding: 14, background: fbInfo ? WARN_BG : BG, border: `1px dashed ${BORDER}`, borderRadius: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <button type="button" className="primary" disabled={tourStarted} onClick={() => setTourStarted(true)}
+              style={tourStarted ? { opacity: 0.55, cursor: "default" } : undefined}>
+              <Play size={14} /> {tourStarted ? "Erfassung läuft" : "Tour erfassen starten"}
+            </button>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: fbLoading ? "default" : "pointer", padding: "7px 12px", border: `1px solid ${BORDER}`, borderRadius: 8, background: CARD, fontSize: 13, fontWeight: 500, opacity: fbLoading ? 0.6 : 1 }}>
+              {fbLoading ? <Loader2 size={14} /> : <FileScan size={14} />}
+              {fbLoading ? "Wird ausgelesen …" : "Frachtbrief hochladen"}
+              <input type="file" accept="application/pdf,image/jpeg,image/png,image/webp,image/heic,image/heif"
+                style={{ display: "none" }} onChange={handleFrachtbriefUpload} disabled={fbLoading} />
+            </label>
+            <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>{tourStarted ? "PDF oder Foto - füllt das Formular automatisch aus" : "Erst \"Tour erfassen starten\" klicken - oder direkt einen Frachtbrief hochladen"}</span>
+            {fbInfo && (
+              <button type="button" className="ghost" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => setFbInfo(null)}>
+                <X size={12} /> Hinweis ausblenden
+              </button>
+            )}
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, marginBottom: 0, fontSize: 13, color: tourStarted ? TEXT : TEXT_MUTED, cursor: tourStarted ? "pointer" : "default" }}>
+            <input type="checkbox" style={{ width: "auto", margin: 0 }} checked={!!form.andererAuftraggeber} disabled={!tourStarted}
+              onChange={(e) => {
+                setForm(toggleAnderer(form, e.target.checked));
+                if (e.target.checked) setFormErrors(formErrors.filter((k) => !ANDERER_NICHT_PFLICHT.includes(k)));
+              }} />
+            <span style={{ fontWeight: 500 }}>Anderer Auftraggeber</span>
+            <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>· nur Fracht erfassen (Container, Zeiten, KM und übrige Kosten gesperrt)</span>
+          </label>
+          {eingangRow && (
+            <div style={{ marginTop: 10, fontSize: 12.5, color: MARINE, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <Inbox size={14} /> Aus der Fahrer-App: gesendet von <strong>{eingangRow.fahrer}</strong> am {new Date(eingangRow.created_at).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+              <button type="button" className="ghost" style={{ padding: "3px 8px", fontSize: 12 }} onClick={openEingangPdf}>Original ansehen</button>
+            </div>
+          )}
+          {fbError && <div style={{ marginTop: 10, fontSize: 12.5, color: DANGER }}>{fbError}</div>}
+          {fbInfo && (
+            <div style={{ marginTop: 10, fontSize: 12.5, color: AMBER_DARK }}>
+              <div>Daten aus Frachtbrief übernommen - bitte alle amber markierten Felder prüfen, bevor du speicherst.</div>
+              {fbInfo.unsure.size > 0 && (
+                <div style={{ marginTop: 4 }}>KI unsicher bei: {[...fbInfo.unsure].join(", ")}</div>
+              )}
+              {fbInfo.lkwWarn && <div style={{ marginTop: 4 }}>{fbInfo.lkwWarn}</div>}
+              {fbInfo.locationNote && <div style={{ marginTop: 4 }}>{fbInfo.locationNote}</div>}
+              {fbInfo.timeWarn && <div style={{ marginTop: 4 }}>{fbInfo.timeWarn}</div>}
+            </div>
+          )}
+        </div>
+        <fieldset disabled={!tourStarted} style={{ border: 0, padding: 0, margin: 0, minWidth: 0, opacity: tourStarted ? 1 : 0.5 }}>
+        <div className="neue-tour-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <div>
+            <label>Datum *</label>
+            <input type="date" value={form.datum} style={fbFieldStyle("datum", fbInfo, formErrors)}
+              onChange={(e) => { handleDatumChange(e.target.value, setForm, form); setFormErrors(formErrors.filter((k) => k !== "datum")); clearFbFlag("datum"); }} />
+          </div>
+          <div>
+            <label>LKW *</label>
+            <select value={form.lkw} style={fbFieldStyle("lkw", fbInfo, formErrors)}
+              onChange={(e) => { handlePlateChange(e.target.value, setForm, form); setFormErrors(formErrors.filter((k) => k !== "lkw")); clearFbFlag("lkw"); }}>
+              <option value="">Auswählen …</option>
+              {fleet.map((f) => <option key={f.plate} value={f.plate}>{f.plate}</option>)}
+            </select>
+          </div>
+          <div>
+            <label>Fahrer * {suggestedFahrer && <span style={{ color: TEXT_MUTED }}>· aus Einsatzplan übernommen</span>}</label>
+            <select value={form.fahrer} style={fbFieldStyle("fahrer", fbInfo, formErrors)}
+              onChange={(e) => { setForm({ ...form, fahrer: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "fahrer")); clearFbFlag("fahrer"); }}>
+              <option value="">Bitte wählen …</option>
+              {driverOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label>Auftrags-Nr. *</label>
+            <input value={form.auftragsNr} style={fbFieldStyle("auftragsNr", fbInfo, formErrors)}
+              onChange={(e) => { setForm({ ...form, auftragsNr: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "auftragsNr")); clearFbFlag("auftragsNr"); }} />
+          </div>
+          <div>
+            <label>Container-Nr.{!form.andererAuftraggeber && " *"}</label>
+            <input value={form.containerNr} disabled={form.andererAuftraggeber} style={{ ...fbFieldStyle("containerNr", fbInfo, formErrors), ...lockStyle(form.andererAuftraggeber) }}
+              onChange={(e) => { setForm({ ...form, containerNr: e.target.value.toUpperCase() }); setFormErrors(formErrors.filter((k) => k !== "containerNr")); clearFbFlag("containerNr"); }}
+              onBlur={() => setForm({ ...form, containerNr: normalizeContainerNr(form.containerNr) })} />
+          </div>
+          <div>
+            <label>Kunde / Ladestelle *</label>
+            <CustomerAutocomplete
+              customers={customerOptions}
+              value={form.kunde}
+              style={fbFieldStyle("kunde", fbInfo, formErrors)}
+              onChange={(v) => { setForm({ ...form, kunde: v }); setFormErrors(formErrors.filter((k) => k !== "kunde")); clearFbFlag("kunde"); }}
+              onSelect={(c) => {
+                const { form: filled, last } = fillFormFromCustomer(form, c);
+                setForm(filled);
+                setKundeFillNote(last
+                  ? { kunde: c.name, text: `Vorbelegt aus dem letzten Auftrag vom ${formatDateDMY(last.datum)}${last.auftragsNr ? ` (${last.auftragsNr})` : ""} - Auftrags-Nr., Container, Zeiten, FD und Wartezeit bitte selbst eintragen.` }
+                  : null);
+                setFormErrors(formErrors.filter((k) => !["kunde", "plz", "ort", "km", "fracht"].includes(k)));
+                clearFbFlag("kunde"); clearFbFlag("plz"); clearFbFlag("ort");
+              }}
+            />
+            {kundeFillNote && kundeFillNote.kunde === form.kunde && (
+              <div style={{ marginTop: 4, fontSize: 11.5, color: TEXT_MUTED }}>{kundeFillNote.text}</div>
+            )}
+          </div>
+          <div>
+            <label>PLZ * {lastTour && <span style={{ color: TEXT_MUTED }}>· Vorschlag: {lastTour.plz}</span>}</label>
+            <input value={form.plz} style={fbFieldStyle("plz", fbInfo, formErrors)}
+              onChange={(e) => { setForm({ ...form, plz: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "plz")); clearFbFlag("plz"); }} />
+          </div>
+          <div>
+            <label>Ort * {lastTour && <span style={{ color: TEXT_MUTED }}>· Vorschlag: {lastTour.ort}</span>}</label>
+            <input value={form.ort} style={fbFieldStyle("ort", fbInfo, formErrors)}
+              onChange={(e) => { setForm({ ...form, ort: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "ort")); clearFbFlag("ort"); }} />
+          </div>
+          <div>
+            <label>Ankunft{!form.andererAuftraggeber && " *"}</label>
+            <input type="time" value={form.ankunft} disabled={form.andererAuftraggeber} style={{ ...fbFieldStyle("ankunft", fbInfo, formErrors), ...lockStyle(form.andererAuftraggeber) }}
+              onChange={(e) => { setForm({ ...form, ankunft: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "ankunft")); clearFbFlag("ankunft"); }} />
+          </div>
+          <div>
+            <label>Abfahrt{!form.andererAuftraggeber && " *"}</label>
+            <input type="time" value={form.abfahrt} disabled={form.andererAuftraggeber} style={{ ...fbFieldStyle("abfahrt", fbInfo, formErrors), ...lockStyle(form.andererAuftraggeber) }}
+              onChange={(e) => { setForm({ ...form, abfahrt: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "abfahrt")); clearFbFlag("abfahrt"); }} />
+          </div>
+          <div>
+            <label>Abrechnungs-KM{!form.andererAuftraggeber && " *"}</label>
+            <input type="number" value={form.km} disabled={form.andererAuftraggeber} style={{ ...fbFieldStyle("km", fbInfo, formErrors), ...lockStyle(form.andererAuftraggeber) }}
+              onChange={(e) => {
+                const km = e.target.value;
+                const fracht = calcFracht(km);
+                const diesel = calcDiesel(km, form.datum);
+                setForm({ ...form, km, ...(fracht !== "" ? { fracht } : {}), ...(diesel !== "" ? { diesel } : {}) });
+                setFormErrors(formErrors.filter((k) => k !== "km"));
+                clearFbFlag("km");
+              }} />
+          </div>
+
+          {[
+            ["fracht", "Fracht (€)", "automatisch aus Staffelrate"],
+            ["fd", "FD (€)", null],
+            ["adr", "ADR (€)", null],
+            ["multistop", "Multistop (€)", null],
+            ["wartezeit", "Wartezeit (€)", null],
+            ["maut", "Maut (€)", null],
+            ["diesel", "Diesel (€)", "automatisch aus Diesel-Index"],
+          ].map(([key, lbl, hint]) => {
+            const locked = form.andererAuftraggeber && ANDERER_GESPERRT.includes(key);
+            return (
+            <div key={key}>
+              <label>
+                {lbl}
+                {hint && !form.andererAuftraggeber && <span style={{ color: TEXT_MUTED }}> · {hint}</span>}
+                {key === "maut" && lastTour && lastTour.maut !== undefined && lastTour.maut !== "" && (
+                  <span style={{ color: TEXT_MUTED }}> · Vorschlag: {euro(lastTour.maut)}</span>
+                )}
+              </label>
+              <input type="number" value={form[key]} disabled={locked} style={lockStyle(locked)} onChange={(e) => setForm({ ...form, [key]: e.target.value })} />
+            </div>
+            );
+          })}
+
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label>Bemerkungen</label>
+            <textarea rows={2} value={form.bemerkungen} onChange={(e) => setForm({ ...form, bemerkungen: e.target.value })} />
+          </div>
+
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label>Status *</label>
+            <select value={form.status} style={statusFieldStyle(form.status, formErrors)}
+              onChange={(e) => { setForm({ ...form, status: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "status")); }}>
+              <option value="">Bitte wählen …</option>
+              <option>Offen</option><option>Reklamiert</option><option>Abgerechnet</option>
+            </select>
+          </div>
+        </div>
+        </fieldset>
+
+        <div style={{ marginTop: 18, background: BG, borderRadius: 8, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontSize: 13, fontWeight: 500, color: TEXT_MUTED }}>Gesamtsumme</span>
+          <span className="mono" style={{ fontSize: 18, fontWeight: 600, color: MARINE }}>{euro(gesamt(form))}</span>
+        </div>
+
+        <div style={{ marginTop: 18, display: "flex", alignItems: "center", gap: 14 }}>
+          <button className="primary" disabled={!tourStarted} style={!tourStarted ? { opacity: 0.5, cursor: "default" } : undefined} onClick={handleSave}><Save size={15} /> Tour speichern</button>
+          <button type="button" className="ghost" onClick={handleCancelNewTour}><X size={15} /> Abbrechen</button>
+          {saveNote && <span style={{ fontSize: 12.5, color: formErrors.length > 0 ? DANGER : SUCCESS }}>{saveNote}</span>}
+        </div>
+        <div style={{ fontSize: 11, color: TEXT_MUTED, marginTop: 10 }}>* Pflichtfeld</div>
+      </div>
+  );
 
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -2718,8 +2911,16 @@ export default function TourenApp() {
 
         {tab === "eingang" && (
           <div>
-            <PageHeading icon={Inbox} title="Frachtbrief-Eingang" subtitle="Von den Fahrern per App geschickt - schon ausgelesen. Prüfen, Tour anlegen, fertig." />
-            <FrachtbriefEingang drivers={drivers} fleet={fleet} tours={tours} onTourAnlegen={startTourFromEingang} onCountChange={setEingangNeu} />
+            <PageHeading icon={Inbox} title="Frachtbrief-Eingang" subtitle="Brief anklicken - Maske wird ausgefüllt, rechts das Original zum Vergleichen. Prüfen, speichern, nächster." />
+            <FrachtbriefEingang
+              drivers={drivers} fleet={fleet} tours={tours}
+              formular={neueTourCard}
+              aktiveId={eingangRow ? eingangRow.id : null}
+              formFrei={!tourStarted}
+              reloadToken={eingangReload}
+              onTourAnlegen={startTourFromEingang}
+              onCountChange={setEingangNeu}
+            />
           </div>
         )}
 
@@ -2727,194 +2928,7 @@ export default function TourenApp() {
           <div>
           <PageHeading icon={PlusCircle} title="Neue Tour erfassen" />
           <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap" }}>
-          <div className="neue-tour-card" style={{ maxWidth: 640, flex: "1 1 480px", background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 24 }}>
-            <div style={{ marginBottom: 18, padding: 14, background: fbInfo ? WARN_BG : BG, border: `1px dashed ${BORDER}`, borderRadius: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <button type="button" className="primary" disabled={tourStarted} onClick={() => setTourStarted(true)}
-                  style={tourStarted ? { opacity: 0.55, cursor: "default" } : undefined}>
-                  <Play size={14} /> {tourStarted ? "Erfassung läuft" : "Tour erfassen starten"}
-                </button>
-                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: fbLoading ? "default" : "pointer", padding: "7px 12px", border: `1px solid ${BORDER}`, borderRadius: 8, background: CARD, fontSize: 13, fontWeight: 500, opacity: fbLoading ? 0.6 : 1 }}>
-                  {fbLoading ? <Loader2 size={14} /> : <FileScan size={14} />}
-                  {fbLoading ? "Wird ausgelesen …" : "Frachtbrief hochladen"}
-                  <input type="file" accept="application/pdf,image/jpeg,image/png,image/webp,image/heic,image/heif"
-                    style={{ display: "none" }} onChange={handleFrachtbriefUpload} disabled={fbLoading} />
-                </label>
-                <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>{tourStarted ? "PDF oder Foto - füllt das Formular automatisch aus" : "Erst \"Tour erfassen starten\" klicken - oder direkt einen Frachtbrief hochladen"}</span>
-                {fbInfo && (
-                  <button type="button" className="ghost" style={{ padding: "4px 8px", fontSize: 12 }} onClick={() => setFbInfo(null)}>
-                    <X size={12} /> Hinweis ausblenden
-                  </button>
-                )}
-              </div>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, marginBottom: 0, fontSize: 13, color: tourStarted ? TEXT : TEXT_MUTED, cursor: tourStarted ? "pointer" : "default" }}>
-                <input type="checkbox" style={{ width: "auto", margin: 0 }} checked={!!form.andererAuftraggeber} disabled={!tourStarted}
-                  onChange={(e) => {
-                    setForm(toggleAnderer(form, e.target.checked));
-                    if (e.target.checked) setFormErrors(formErrors.filter((k) => !ANDERER_NICHT_PFLICHT.includes(k)));
-                  }} />
-                <span style={{ fontWeight: 500 }}>Anderer Auftraggeber</span>
-                <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>· nur Fracht erfassen (Container, Zeiten, KM und übrige Kosten gesperrt)</span>
-              </label>
-              {eingangRow && (
-                <div style={{ marginTop: 10, fontSize: 12.5, color: MARINE, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <Inbox size={14} /> Aus der Fahrer-App: gesendet von <strong>{eingangRow.fahrer}</strong> am {new Date(eingangRow.created_at).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                  <button type="button" className="ghost" style={{ padding: "3px 8px", fontSize: 12 }} onClick={openEingangPdf}>Original ansehen</button>
-                </div>
-              )}
-              {fbError && <div style={{ marginTop: 10, fontSize: 12.5, color: DANGER }}>{fbError}</div>}
-              {fbInfo && (
-                <div style={{ marginTop: 10, fontSize: 12.5, color: AMBER_DARK }}>
-                  <div>Daten aus Frachtbrief übernommen - bitte alle amber markierten Felder prüfen, bevor du speicherst.</div>
-                  {fbInfo.unsure.size > 0 && (
-                    <div style={{ marginTop: 4 }}>KI unsicher bei: {[...fbInfo.unsure].join(", ")}</div>
-                  )}
-                  {fbInfo.lkwWarn && <div style={{ marginTop: 4 }}>{fbInfo.lkwWarn}</div>}
-                  {fbInfo.locationNote && <div style={{ marginTop: 4 }}>{fbInfo.locationNote}</div>}
-                  {fbInfo.timeWarn && <div style={{ marginTop: 4 }}>{fbInfo.timeWarn}</div>}
-                </div>
-              )}
-            </div>
-            <fieldset disabled={!tourStarted} style={{ border: 0, padding: 0, margin: 0, minWidth: 0, opacity: tourStarted ? 1 : 0.5 }}>
-            <div className="neue-tour-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-              <div>
-                <label>Datum *</label>
-                <input type="date" value={form.datum} style={fbFieldStyle("datum", fbInfo, formErrors)}
-                  onChange={(e) => { handleDatumChange(e.target.value, setForm, form); setFormErrors(formErrors.filter((k) => k !== "datum")); clearFbFlag("datum"); }} />
-              </div>
-              <div>
-                <label>LKW *</label>
-                <select value={form.lkw} style={fbFieldStyle("lkw", fbInfo, formErrors)}
-                  onChange={(e) => { handlePlateChange(e.target.value, setForm, form); setFormErrors(formErrors.filter((k) => k !== "lkw")); clearFbFlag("lkw"); }}>
-                  <option value="">Auswählen …</option>
-                  {fleet.map((f) => <option key={f.plate} value={f.plate}>{f.plate}</option>)}
-                </select>
-              </div>
-              <div>
-                <label>Fahrer * {suggestedFahrer && <span style={{ color: TEXT_MUTED }}>· aus Einsatzplan übernommen</span>}</label>
-                <select value={form.fahrer} style={fbFieldStyle("fahrer", fbInfo, formErrors)}
-                  onChange={(e) => { setForm({ ...form, fahrer: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "fahrer")); clearFbFlag("fahrer"); }}>
-                  <option value="">Bitte wählen …</option>
-                  {driverOptions.map((name) => <option key={name} value={name}>{name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label>Auftrags-Nr. *</label>
-                <input value={form.auftragsNr} style={fbFieldStyle("auftragsNr", fbInfo, formErrors)}
-                  onChange={(e) => { setForm({ ...form, auftragsNr: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "auftragsNr")); clearFbFlag("auftragsNr"); }} />
-              </div>
-              <div>
-                <label>Container-Nr.{!form.andererAuftraggeber && " *"}</label>
-                <input value={form.containerNr} disabled={form.andererAuftraggeber} style={{ ...fbFieldStyle("containerNr", fbInfo, formErrors), ...lockStyle(form.andererAuftraggeber) }}
-                  onChange={(e) => { setForm({ ...form, containerNr: e.target.value.toUpperCase() }); setFormErrors(formErrors.filter((k) => k !== "containerNr")); clearFbFlag("containerNr"); }}
-                  onBlur={() => setForm({ ...form, containerNr: normalizeContainerNr(form.containerNr) })} />
-              </div>
-              <div>
-                <label>Kunde / Ladestelle *</label>
-                <CustomerAutocomplete
-                  customers={customerOptions}
-                  value={form.kunde}
-                  style={fbFieldStyle("kunde", fbInfo, formErrors)}
-                  onChange={(v) => { setForm({ ...form, kunde: v }); setFormErrors(formErrors.filter((k) => k !== "kunde")); clearFbFlag("kunde"); }}
-                  onSelect={(c) => {
-                    const { form: filled, last } = fillFormFromCustomer(form, c);
-                    setForm(filled);
-                    setKundeFillNote(last
-                      ? { kunde: c.name, text: `Vorbelegt aus dem letzten Auftrag vom ${formatDateDMY(last.datum)}${last.auftragsNr ? ` (${last.auftragsNr})` : ""} - Auftrags-Nr., Container, Zeiten, FD und Wartezeit bitte selbst eintragen.` }
-                      : null);
-                    setFormErrors(formErrors.filter((k) => !["kunde", "plz", "ort", "km", "fracht"].includes(k)));
-                    clearFbFlag("kunde"); clearFbFlag("plz"); clearFbFlag("ort");
-                  }}
-                />
-                {kundeFillNote && kundeFillNote.kunde === form.kunde && (
-                  <div style={{ marginTop: 4, fontSize: 11.5, color: TEXT_MUTED }}>{kundeFillNote.text}</div>
-                )}
-              </div>
-              <div>
-                <label>PLZ * {lastTour && <span style={{ color: TEXT_MUTED }}>· Vorschlag: {lastTour.plz}</span>}</label>
-                <input value={form.plz} style={fbFieldStyle("plz", fbInfo, formErrors)}
-                  onChange={(e) => { setForm({ ...form, plz: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "plz")); clearFbFlag("plz"); }} />
-              </div>
-              <div>
-                <label>Ort * {lastTour && <span style={{ color: TEXT_MUTED }}>· Vorschlag: {lastTour.ort}</span>}</label>
-                <input value={form.ort} style={fbFieldStyle("ort", fbInfo, formErrors)}
-                  onChange={(e) => { setForm({ ...form, ort: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "ort")); clearFbFlag("ort"); }} />
-              </div>
-              <div>
-                <label>Ankunft{!form.andererAuftraggeber && " *"}</label>
-                <input type="time" value={form.ankunft} disabled={form.andererAuftraggeber} style={{ ...fbFieldStyle("ankunft", fbInfo, formErrors), ...lockStyle(form.andererAuftraggeber) }}
-                  onChange={(e) => { setForm({ ...form, ankunft: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "ankunft")); clearFbFlag("ankunft"); }} />
-              </div>
-              <div>
-                <label>Abfahrt{!form.andererAuftraggeber && " *"}</label>
-                <input type="time" value={form.abfahrt} disabled={form.andererAuftraggeber} style={{ ...fbFieldStyle("abfahrt", fbInfo, formErrors), ...lockStyle(form.andererAuftraggeber) }}
-                  onChange={(e) => { setForm({ ...form, abfahrt: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "abfahrt")); clearFbFlag("abfahrt"); }} />
-              </div>
-              <div>
-                <label>Abrechnungs-KM{!form.andererAuftraggeber && " *"}</label>
-                <input type="number" value={form.km} disabled={form.andererAuftraggeber} style={{ ...fbFieldStyle("km", fbInfo, formErrors), ...lockStyle(form.andererAuftraggeber) }}
-                  onChange={(e) => {
-                    const km = e.target.value;
-                    const fracht = calcFracht(km);
-                    const diesel = calcDiesel(km, form.datum);
-                    setForm({ ...form, km, ...(fracht !== "" ? { fracht } : {}), ...(diesel !== "" ? { diesel } : {}) });
-                    setFormErrors(formErrors.filter((k) => k !== "km"));
-                    clearFbFlag("km");
-                  }} />
-              </div>
-
-              {[
-                ["fracht", "Fracht (€)", "automatisch aus Staffelrate"],
-                ["fd", "FD (€)", null],
-                ["adr", "ADR (€)", null],
-                ["multistop", "Multistop (€)", null],
-                ["wartezeit", "Wartezeit (€)", null],
-                ["maut", "Maut (€)", null],
-                ["diesel", "Diesel (€)", "automatisch aus Diesel-Index"],
-              ].map(([key, lbl, hint]) => {
-                const locked = form.andererAuftraggeber && ANDERER_GESPERRT.includes(key);
-                return (
-                <div key={key}>
-                  <label>
-                    {lbl}
-                    {hint && !form.andererAuftraggeber && <span style={{ color: TEXT_MUTED }}> · {hint}</span>}
-                    {key === "maut" && lastTour && lastTour.maut !== undefined && lastTour.maut !== "" && (
-                      <span style={{ color: TEXT_MUTED }}> · Vorschlag: {euro(lastTour.maut)}</span>
-                    )}
-                  </label>
-                  <input type="number" value={form[key]} disabled={locked} style={lockStyle(locked)} onChange={(e) => setForm({ ...form, [key]: e.target.value })} />
-                </div>
-                );
-              })}
-
-              <div style={{ gridColumn: "1 / -1" }}>
-                <label>Bemerkungen</label>
-                <textarea rows={2} value={form.bemerkungen} onChange={(e) => setForm({ ...form, bemerkungen: e.target.value })} />
-              </div>
-
-              <div style={{ gridColumn: "1 / -1" }}>
-                <label>Status *</label>
-                <select value={form.status} style={statusFieldStyle(form.status, formErrors)}
-                  onChange={(e) => { setForm({ ...form, status: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "status")); }}>
-                  <option value="">Bitte wählen …</option>
-                  <option>Offen</option><option>Reklamiert</option><option>Abgerechnet</option>
-                </select>
-              </div>
-            </div>
-            </fieldset>
-
-            <div style={{ marginTop: 18, background: BG, borderRadius: 8, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 13, fontWeight: 500, color: TEXT_MUTED }}>Gesamtsumme</span>
-              <span className="mono" style={{ fontSize: 18, fontWeight: 600, color: MARINE }}>{euro(gesamt(form))}</span>
-            </div>
-
-            <div style={{ marginTop: 18, display: "flex", alignItems: "center", gap: 14 }}>
-              <button className="primary" disabled={!tourStarted} style={!tourStarted ? { opacity: 0.5, cursor: "default" } : undefined} onClick={handleSave}><Save size={15} /> Tour speichern</button>
-              <button type="button" className="ghost" onClick={handleCancelNewTour}><X size={15} /> Abbrechen</button>
-              {saveNote && <span style={{ fontSize: 12.5, color: formErrors.length > 0 ? DANGER : SUCCESS }}>{saveNote}</span>}
-            </div>
-            <div style={{ fontSize: 11, color: TEXT_MUTED, marginTop: 10 }}>* Pflichtfeld</div>
-          </div>
+          {neueTourCard}
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: 16, flex: "2 1 600px" }}>
             <RatesInfoBox />
