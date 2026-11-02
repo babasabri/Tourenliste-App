@@ -8,11 +8,14 @@ import { ZoomIn, ZoomOut, Maximize2, RotateCw } from "lucide-react";
 import { supabase } from "./supabaseClient";
 import { loadPdfjs } from "./gutschriftParser";
 
-const cache = new Map(); // datei_pfad -> ArrayBuffer (bereits geladene PDFs)
+const cache = new Map(); // datei_pfad -> Blob (bereits geladene Dateien)
+const istBild = (p) => /\.(jpe?g|png|webp)$/i.test(p || "");
+const istHeic = (p) => /\.hei[cf]$/i.test(p || "");
 
 export default function PdfVorschau({ pfad }) {
   const boxRef = useRef(null);
   const [pdf, setPdf] = useState(null);
+  const [bildUrl, setBildUrl] = useState(null); // bei Fotos statt PDF
   const [fehler, setFehler] = useState("");
   const [zoom, setZoom] = useState(1); // 1 = Seitenbreite
   const [drehung, setDrehung] = useState(0);
@@ -21,19 +24,28 @@ export default function PdfVorschau({ pfad }) {
   // PDF laden
   useEffect(() => {
     let aktiv = true;
+    let objUrl = null;
     setPdf(null);
+    setBildUrl(null);
     setFehler("");
     setZoom(1);
     setDrehung(0);
     (async () => {
       try {
-        let buf = cache.get(pfad);
-        if (!buf) {
+        if (istHeic(pfad)) throw new Error("HEIC-Fotos kann der Browser nicht anzeigen - bitte mit „Groß“ öffnen.");
+        let blob = cache.get(pfad);
+        if (!blob) {
           const { data, error } = await supabase.storage.from("frachtbriefe").download(pfad);
           if (error) throw error;
-          buf = await data.arrayBuffer();
-          cache.set(pfad, buf);
+          blob = data;
+          cache.set(pfad, blob);
         }
+        if (istBild(pfad)) {
+          objUrl = URL.createObjectURL(blob);
+          if (aktiv) setBildUrl(objUrl);
+          return;
+        }
+        const buf = await blob.arrayBuffer();
         const pdfjs = await loadPdfjs();
         const doc = await pdfjs.getDocument({ data: buf.slice(0) }).promise;
         if (aktiv) setPdf(doc);
@@ -41,7 +53,7 @@ export default function PdfVorschau({ pfad }) {
         if (aktiv) setFehler(err.message || "Frachtbrief konnte nicht geladen werden.");
       }
     })();
-    return () => { aktiv = false; };
+    return () => { aktiv = false; if (objUrl) URL.revokeObjectURL(objUrl); };
   }, [pfad]);
 
   // Breite des Bereichs beobachten (Seiten passen sich an)
@@ -69,7 +81,12 @@ export default function PdfVorschau({ pfad }) {
       </div>
       <div ref={boxRef} style={{ flex: 1, minHeight: 0, overflow: "auto", background: "#E9EDF1", borderRadius: 8, padding: 8, boxSizing: "border-box" }}>
         {fehler && <div style={{ padding: 20, fontSize: 13, color: "#C4573F" }}>{fehler}</div>}
-        {!fehler && !pdf && <div style={{ padding: 20, fontSize: 13, color: "#64707C", textAlign: "center" }}>Lade Frachtbrief …</div>}
+        {bildUrl && breite > 0 && (
+          <div style={{ display: "flex", justifyContent: "center" }}>
+            <img src={bildUrl} alt="Frachtbrief" style={{ width: (breite - 16) * zoom, maxWidth: "none", transform: `rotate(${drehung}deg)`, transformOrigin: "center", background: "#fff", boxShadow: "0 1px 3px rgba(0,0,0,0.15)", margin: drehung % 180 ? `${((breite - 16) * zoom) * 0.2}px 0` : 0 }} />
+          </div>
+        )}
+        {!fehler && !pdf && !bildUrl && <div style={{ padding: 20, fontSize: 13, color: "#64707C", textAlign: "center" }}>Lade Frachtbrief …</div>}
         {pdf && breite > 0 && seiten.map((n) => (
           <PdfSeite key={`${n}-${drehung}`} pdf={pdf} nr={n} breite={(breite - 16) * zoom} drehung={drehung} />
         ))}

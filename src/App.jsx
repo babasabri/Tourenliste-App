@@ -1360,6 +1360,9 @@ export default function TourenApp() {
     if (!file) return;
     setTourStarted(true); // Upload startet die Erfassung automatisch
     setEingangRow(null);
+    // Im Frachtbrief-Eingang wird die Datei zusätzlich abgelegt: erscheint dann
+    // in der Liste + Vorschau und wird beim Speichern mit der Tour verknüpft.
+    const imEingang = tab === "eingang";
 
     const ALLOWED_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
     if (!ALLOWED_TYPES.includes(file.type)) {
@@ -1374,7 +1377,13 @@ export default function TourenApp() {
     setFbLoading(true);
     setFbError("");
     setFbInfo(null);
+    let eingang = null;
     try {
+      if (imEingang) {
+        eingang = await db.frachtbriefImBueroAblegen(file);
+        setEingangRow(eingang);
+        setEingangReload((x) => x + 1); // Liste + Vorschau sofort zeigen
+      }
       const fileBase64 = await fileToBase64(file);
       // Bekannte Kennzeichen aus den Stammdaten mitschicken, damit die KI das
       // handschriftliche Kennzeichen gegen die tatsächlich existierenden LKW
@@ -1382,9 +1391,15 @@ export default function TourenApp() {
       // einem kleinen, festen Fuhrpark deutlich zuverlässiger als freie OCR.
       const knownPlates = fleet.map((f) => f.plate).filter(Boolean);
       const extracted = await db.extractFrachtbrief(fileBase64, file.type, knownPlates);
-      applyFrachtbriefData(extracted);
+      // im Eingang mit leerer Maske starten (nicht mit Resten eines anderen Briefs)
+      applyFrachtbriefData(extracted, imEingang ? emptyForm : form);
+      if (eingang) {
+        await db.eingangAusleseSpeichern(eingang.id, extracted);
+        setEingangReload((x) => x + 1);
+      }
     } catch (err) {
       setFbError(err.message || "Frachtbrief konnte nicht ausgelesen werden.");
+      if (eingang) { db.eingangAusleseSpeichern(eingang.id, null, err.message || "Fehler"); setEingangReload((x) => x + 1); }
     } finally {
       setFbLoading(false);
     }
@@ -2052,7 +2067,9 @@ export default function TourenApp() {
           </label>
           {eingangRow && (
             <div style={{ marginTop: 10, fontSize: 12.5, color: MARINE, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <Inbox size={14} /> Aus der Fahrer-App: gesendet von <strong>{eingangRow.fahrer}</strong> am {new Date(eingangRow.created_at).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+              <Inbox size={14} /> {eingangRow.quelle === "buero"
+                    ? <>Im Büro hochgeladen{eingangRow.dateiname ? <> (<strong>{eingangRow.dateiname}</strong>)</> : null} - wird beim Speichern mit der Tour verknüpft</>
+                    : <>Aus der Fahrer-App: gesendet von <strong>{eingangRow.fahrer}</strong> am {new Date(eingangRow.created_at).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</>}
               <button type="button" className="ghost" style={{ padding: "3px 8px", fontSize: 12 }} onClick={openEingangPdf}>Original ansehen</button>
             </div>
           )}

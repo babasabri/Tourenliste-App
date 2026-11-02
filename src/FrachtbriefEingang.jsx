@@ -150,7 +150,9 @@ export default function FrachtbriefEingang({ drivers, fleet, tours, formular, ak
       const { data: blob, error } = await supabase.storage.from("frachtbriefe").download(row.datei_pfad);
       if (error) throw error;
       const b64 = await blobToBase64(blob);
-      const extr = await db.extractFrachtbrief(b64, "application/pdf", fleet.map((f) => f.plate).filter(Boolean));
+      const ext = (row.datei_pfad.split(".").pop() || "").toLowerCase();
+      const typ = ({ jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", heic: "image/heic", heif: "image/heif" })[ext] || "application/pdf";
+      const extr = await db.extractFrachtbrief(b64, typ, fleet.map((f) => f.plate).filter(Boolean));
       await supabase.from("frachtbrief_eingang").update({ extraktion: extr, auslese_status: "fertig", auslese_fehler: null }).eq("id", row.id);
     } catch (err) {
       setFehler(err.message || "Auslesen fehlgeschlagen.");
@@ -229,7 +231,7 @@ export default function FrachtbriefEingang({ drivers, fleet, tours, formular, ak
                         {zeitText(r.created_at)}
                         <div style={{ fontSize: 11, color: TEXT_MUTED }}>{r.seiten} Seite{r.seiten > 1 ? "n" : ""}</div>
                       </td>
-                      <td style={{ ...td, fontWeight: 600 }}>{r.fahrer}</td>
+                      <td style={{ ...td, fontWeight: 600 }} title={r.quelle === "buero" && r.dateiname ? r.dateiname : undefined}>{r.fahrer}</td>
                       <td style={{ ...td, ...mono }}>{e.auftragsNr || "–"}</td>
                       <td style={{ ...td, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={e.kunde || ""}>{e.kunde || "–"}</td>
                       <td style={td}>
@@ -253,7 +255,7 @@ export default function FrachtbriefEingang({ drivers, fleet, tours, formular, ak
           {!ansicht ? (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: TEXT_MUTED, fontSize: 13, textAlign: "center", padding: 20 }}>
               <FileText size={28} style={{ marginBottom: 10 }} />
-              Hier erscheint der Frachtbrief.<br />Links einen Brief anklicken.
+              Hier erscheint der Frachtbrief.<br />Links einen Brief anklicken - oder in der Maske<br />„Frachtbrief hochladen“ (PDF oder Foto aus dem Büro).
             </div>
           ) : (
             <>

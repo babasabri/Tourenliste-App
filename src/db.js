@@ -258,6 +258,32 @@ export async function fetchCustomers() {
 // Anthropic-API) eine Error mit einer für den Nutzer verständlichen Meldung -
 // App.jsx zeigt sie direkt im "Neue Tour"-Formular an. Die zurückgegebenen
 // Werte sind ein Vorschlag, kein Ersatz für die Prüfung durch den Disponenten.
+// Frachtbrief, den das Büro selbst hochlädt (Tab "Frachtbrief-Eingang"):
+// Datei im Bucket "frachtbriefe" unter buero/ ablegen und eine Zeile im
+// Eingang anlegen - danach läuft alles wie bei Briefen aus der Fahrer-App
+// (Vorschau, Tour anlegen, Verknüpfung mit der Tour).
+export async function frachtbriefImBueroAblegen(file) {
+  const id = crypto.randomUUID();
+  const ext = ({ "application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/heic": "heic", "image/heif": "heif" })[file.type] || "bin";
+  const d = new Date();
+  const pfad = `buero/${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${id}.${ext}`;
+  const up = await supabase.storage.from("frachtbriefe").upload(pfad, file, { contentType: file.type });
+  if (up.error) throw new Error("Datei konnte nicht gespeichert werden.");
+  const { data, error } = await supabase.from("frachtbrief_eingang").insert({
+    id, quelle: "buero", fahrer: "Büro", seiten: 1, datei_pfad: pfad, datei_groesse: file.size,
+    dateiname: file.name || null, auslese_status: "laeuft",
+  }).select().single();
+  if (error) throw new Error("Eintrag im Eingang konnte nicht angelegt werden.");
+  return data;
+}
+
+export async function eingangAusleseSpeichern(id, extraktion, fehler) {
+  await supabase.from("frachtbrief_eingang").update(
+    fehler ? { auslese_status: "fehler", auslese_fehler: String(fehler).slice(0, 300) }
+      : { extraktion, auslese_status: "fertig", auslese_fehler: null }
+  ).eq("id", id);
+}
+
 export async function extractFrachtbrief(fileBase64, mediaType, knownPlates) {
   const { data, error } = await supabase.functions.invoke("extract-frachtbrief", {
     body: { fileBase64, mediaType, knownPlates: knownPlates || [] },
