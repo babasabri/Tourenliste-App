@@ -108,8 +108,16 @@ export default function FrachtbriefEingang({ drivers, fleet, tours, formular, ak
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken]);
 
-  // Vorschau folgt dem Brief, der gerade in der Maske ist
-  useEffect(() => { if (aktiveId) setAnsichtId(aktiveId); }, [aktiveId]);
+  // Vorschau folgt dem Brief, der gerade in der Maske ist. Verlässt er die
+  // Maske (Tour gespeichert oder abgebrochen), verschwindet er auch aus der
+  // Vorschau - bis der nächste Brief geladen wird.
+  const vorherAktiv = useRef(aktiveId);
+  useEffect(() => {
+    const vorher = vorherAktiv.current;
+    vorherAktiv.current = aktiveId;
+    if (aktiveId) setAnsichtId(aktiveId);
+    else if (vorher) setAnsichtId((id) => (id === vorher ? null : id));
+  }, [aktiveId]);
 
   const ansicht = rows.find((r) => r.id === ansichtId) || null;
 
