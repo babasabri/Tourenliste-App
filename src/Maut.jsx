@@ -70,7 +70,8 @@ function zeitraum(f) {
 const imZr = (d, z) => (!z.start || d >= z.start) && (!z.ende || d <= z.ende);
 
 const MAX_WOCHEN_KM = 4500;
-function kmJeLkw(wochen, { start, ende }) {
+// istDrin(lkw, iso): Tag zählt mit (Zeitraum + Mautdaten für diesen LKW)
+function kmJeLkw(wochen, istDrin) {
   const map = {};
   for (const w of wochen) {
     if (w.wochenKm === null || w.wochenKm === undefined || w.wochenKm < 0 || w.wochenKm > MAX_WOCHEN_KM) continue;
@@ -80,7 +81,7 @@ function kmJeLkw(wochen, { start, ende }) {
       const d = new Date(mo);
       d.setDate(mo.getDate() + i);
       const iso = isoOf(d);
-      if ((!start || iso >= start) && (!ende || iso <= ende)) tage++;
+      if (istDrin(w.lkw, iso)) tage++;
     }
     if (tage > 0) map[w.lkw] = (map[w.lkw] || 0) + (w.wochenKm * tage) / 7;
   }
@@ -208,59 +209,87 @@ export default function Maut({ fleet, tours, wochenKm }) {
     return [...fleetPlates.filter((p) => s.has(p)), ...Array.from(s).filter((p) => !fleetPlates.includes(p)).sort()];
   }, [daten, fleetPlates]);
 
-  // Zeitraum mit Toll-Collect-Daten: erste bis letzte Fahrt
-  const abgedeckt = useMemo(() => {
-    let von = "", bis = "";
+  // Abgedeckter Zeitraum JE LKW: eigene LKW über das eigene Toll-Collect-Konto,
+  // Miet-LKW über die Abrechnungen der Mietfirma - die Zeiträume sind
+  // verschieden. Intervalle (Fahrten von-bis je Mautaufstellung) mit Lücken
+  // bis 5 Tage (Wochenende, Feiertage) werden zusammengefasst.
+  const abdeckung = useMemo(() => {
+    const lkwJeAbr = {};
+    for (const t of daten) (lkwJeAbr[t.abrechnungNr] = lkwJeAbr[t.abrechnungNr] || new Set()).add(t.lkw);
+    const roh = {};
     for (const a of abrechnungen) {
-      if (a.fahrtenVon && (!von || a.fahrtenVon < von)) von = a.fahrtenVon;
-      if (a.fahrtenBis && (!bis || a.fahrtenBis > bis)) bis = a.fahrtenBis;
+      if (!a.fahrtenVon || !a.fahrtenBis) continue;
+      for (const l of lkwJeAbr[a.nr] || []) (roh[l] = roh[l] || []).push([a.fahrtenVon, a.fahrtenBis]);
     }
-    return { von, bis };
-  }, [abrechnungen]);
+    const tag = (iso) => new Date(iso + "T12:00:00").getTime() / 86400000;
+    const out = {};
+    for (const [l, iv] of Object.entries(roh)) {
+      iv.sort((a, b) => a[0].localeCompare(b[0]));
+      const m = [];
+      for (const [v, b] of iv) {
+        const last = m[m.length - 1];
+        if (last && tag(v) - tag(last[1]) <= 5) { if (b > last[1]) last[1] = b; }
+        else m.push([v, b]);
+      }
+      out[l] = m;
+    }
+    return out;
+  }, [daten, abrechnungen]);
+
+  // Touren gibt es in der App erst ab der ersten erfassten Tour
+  const ersteTour = useMemo(() => (tours || []).reduce((m, t) => (t.datum && (!m || t.datum < m) ? t.datum : m), ""), [tours]);
+  const letzteTourJeLkw = useMemo(() => {
+    const m = {};
+    for (const t of tours || []) if (t.datum && (!m[t.lkw] || t.datum > m[t.lkw])) m[t.lkw] = t.datum;
+    return m;
+  }, [tours]);
 
   const zr = useMemo(() => zeitraum(f), [f.jahr, f.monat, f.von, f.bis]);
-  // Für Abgleich und km: Filterzeitraum geschnitten mit dem abgedeckten Zeitraum
-  const zrAbgleich = useMemo(() => ({
-    start: abgedeckt.von && (!zr.start || zr.start < abgedeckt.von) ? abgedeckt.von : zr.start,
-    ende: abgedeckt.bis && (!zr.ende || zr.ende > abgedeckt.bis) ? abgedeckt.bis : zr.ende,
-  }), [zr, abgedeckt]);
+  // Für Abgleich und km: Filterzeitraum UND Mautdaten des LKW vorhanden UND Touren erfasst
+  const istDrin = (lkw, iso) => imZr(iso, zr) && (!ersteTour || iso >= ersteTour) && (abdeckung[lkw] || []).some(([v, b]) => iso >= v && iso <= b);
 
   const lkwOk = (p) => f.lkw === "ALLE" || p === f.lkw;
   const fahrten = useMemo(() => daten.filter((t) => imZr(t.datum, zr) && lkwOk(t.lkw)), [daten, zr, f.lkw]);
   const touren = useMemo(
-    () => (tours || []).filter((t) => t.datum && mautLkw.includes(t.lkw) && lkwOk(t.lkw) && imZr(t.datum, zrAbgleich)),
-    [tours, mautLkw, zrAbgleich, f.lkw]
+    () => (tours || []).filter((t) => t.datum && mautLkw.includes(t.lkw) && lkwOk(t.lkw) && istDrin(t.lkw, t.datum)),
+    [tours, mautLkw, zr, abdeckung, ersteTour, f.lkw]
   );
-  const km = useMemo(() => kmJeLkw(wochenKm || [], zrAbgleich), [wochenKm, zrAbgleich]);
+  const km = useMemo(() => kmJeLkw(wochenKm || [], istDrin), [wochenKm, zr, abdeckung, ersteTour]);
 
+  // betragAbgl = bezahlte Maut nur aus dem abgeglichenen Zeitraum (Basis für Differenz)
   const gesamt = useMemo(() => {
-    const s = { fahrten: fahrten.length, betrag: 0, mautKm: 0, berechnet: 0, km: 0 };
-    for (const t of fahrten) { s.betrag += t.betrag; s.mautKm += t.km; }
+    const s = { fahrten: fahrten.length, betrag: 0, betragAbgl: 0, mautKm: 0, berechnet: 0, km: 0 };
+    for (const t of fahrten) { s.betrag += t.betrag; s.mautKm += t.km; if (istDrin(t.lkw, t.datum)) s.betragAbgl += t.betrag; }
     for (const t of touren) s.berechnet += zahl(t.maut);
     for (const p of mautLkw) if (lkwOk(p)) s.km += km[p] || 0;
     return s;
   }, [fahrten, touren, km, mautLkw, f.lkw]);
 
   const proLkw = useMemo(() => mautLkw.filter(lkwOk).map((p) => {
-    const r = { lkw: p, fahrten: 0, betrag: 0, mautKm: 0, berechnet: 0, touren: 0, km: km[p] || 0 };
-    for (const t of fahrten) if (t.lkw === p) { r.fahrten++; r.betrag += t.betrag; r.mautKm += t.km; }
+    const r = { lkw: p, fahrten: 0, betrag: 0, betragAbgl: 0, mautKm: 0, berechnet: 0, touren: 0, km: km[p] || 0 };
+    for (const t of fahrten) if (t.lkw === p) { r.fahrten++; r.betrag += t.betrag; r.mautKm += t.km; if (istDrin(p, t.datum)) r.betragAbgl += t.betrag; }
     for (const t of touren) if (t.lkw === p) { r.touren++; r.berechnet += zahl(t.maut); }
     return r;
   }).filter((r) => r.fahrten > 0 || r.berechnet > 0), [mautLkw, fahrten, touren, km, f.lkw]);
 
   const proMonat = useMemo(() => {
     const map = {};
-    const add = (k) => (map[k] = map[k] || { fahrten: 0, betrag: 0, mautKm: 0, berechnet: 0 });
-    for (const t of fahrten) { const m = add(t.datum.slice(0, 7)); m.fahrten++; m.betrag += t.betrag; m.mautKm += t.km; }
-    for (const t of touren) add(t.datum.slice(0, 7)).berechnet += zahl(t.maut);
+    const add = (k) => (map[k] = map[k] || { fahrten: 0, betrag: 0, betragAbgl: 0, mautKm: 0, berechnet: 0, touren: 0 });
+    for (const t of fahrten) { const m = add(t.datum.slice(0, 7)); m.fahrten++; m.betrag += t.betrag; m.mautKm += t.km; if (istDrin(t.lkw, t.datum)) m.betragAbgl += t.betrag; }
+    for (const t of touren) { const m = add(t.datum.slice(0, 7)); m.berechnet += zahl(t.maut); m.touren++; }
     return Object.keys(map).sort().reverse().map((k) => {
       const [j, m] = k.split("-").map(Number);
-      // Monat nur teilweise abgedeckt? (Toll-Collect-Abrechnung läuft vom 8. bis 7.)
-      const mStart = `${k}-01`, mEnde = isoOf(new Date(j, m, 0));
-      const teil = (abgedeckt.von && abgedeckt.von > mStart) || (abgedeckt.bis && abgedeckt.bis < mEnde);
+      // "teilweise": für einen LKW endet die letzte Mautaufstellung in diesem
+      // Monat, obwohl danach noch Touren erfasst sind (Daten fehlen noch).
+      const mEnde = isoOf(new Date(j, m, 0));
+      const teil = mautLkw.filter(lkwOk).some((l) => {
+        const iv = abdeckung[l] || [];
+        const bis = iv.length ? iv[iv.length - 1][1] : "";
+        return bis && bis.slice(0, 7) === k && bis < mEnde && (letzteTourJeLkw[l] || "") > bis;
+      });
       return { key: k, monat: `${MONATE[m - 1]} ${j}`, teil, ...map[k] };
     });
-  }, [fahrten, touren, abgedeckt]);
+  }, [fahrten, touren, abdeckung, letzteTourJeLkw, mautLkw, f.lkw]);
 
   // Tagesabgleich je LKW
   const tage = useMemo(() => {
@@ -270,7 +299,7 @@ export default function Maut({ fleet, tours, wochenKm }) {
       return (map[k] = map[k] || { key: k, lkw, datum: d, fahrten: [], touren: [], betrag: 0, berechnet: 0, ohneMaut: 0 });
     };
     for (const t of fahrten) {
-      if (!imZr(t.datum, zrAbgleich)) continue;
+      if (!istDrin(t.lkw, t.datum)) continue;
       const x = add(t.lkw, t.datum); x.fahrten.push(t); x.betrag += t.betrag;
     }
     for (const t of touren) {
@@ -285,7 +314,7 @@ export default function Maut({ fleet, tours, wochenKm }) {
       x.fahrten.sort((a, b) => a.zeit.localeCompare(b.zeit));
       return x;
     }).sort((a, b) => b.datum.localeCompare(a.datum) || a.lkw.localeCompare(b.lkw));
-  }, [fahrten, touren, zrAbgleich]);
+  }, [fahrten, touren, abdeckung, ersteTour]);
 
   const tageZaehler = useMemo(() => {
     const z = { ohne_maut: 0, ohne_tour: 0, ohne_fahrt: 0 };
@@ -310,11 +339,20 @@ export default function Maut({ fleet, tours, wochenKm }) {
   const listeSumme = liste.reduce((s, t) => s + t.betrag, 0);
   const listeKm = liste.reduce((s, t) => s + t.km, 0);
 
-  const letzteFahrt = abgedeckt.bis;
-  const diffGesamt = gesamt.berechnet - gesamt.betrag;
+  const letzteFahrt = abrechnungen.reduce((m, a) => (a.fahrtenBis && a.fahrtenBis > m ? a.fahrtenBis : m), "");
+  const diffGesamt = gesamt.berechnet - gesamt.betragAbgl;
+  // Abgedeckte Zeiträume als Text, gleiche Zeiträume zusammengefasst
+  const abdeckungText = useMemo(() => {
+    const grp = {};
+    for (const l of mautLkw.filter(lkwOk)) {
+      const t = (abdeckung[l] || []).map(([v, b]) => `${dmy(v)} – ${dmy(b)}`).join(", ");
+      (grp[t] = grp[t] || []).push(l);
+    }
+    return Object.entries(grp).map(([t, ls]) => `${ls.join(", ")}: ${t}`);
+  }, [abdeckung, mautLkw, f.lkw]);
   const nichtAbgeglichen = useMemo(
-    () => Array.from(new Set((tours || []).filter((t) => t.datum && imZr(t.datum, zrAbgleich) && zahl(t.maut) > 0 && !mautLkw.includes(t.lkw) && lkwOk(t.lkw)).map((t) => t.lkw))),
-    [tours, zrAbgleich, mautLkw, f.lkw]
+    () => Array.from(new Set((tours || []).filter((t) => t.datum && imZr(t.datum, zr) && zahl(t.maut) > 0 && !mautLkw.includes(t.lkw) && lkwOk(t.lkw)).map((t) => t.lkw))),
+    [tours, zr, mautLkw, f.lkw]
   );
 
   return (
@@ -324,6 +362,7 @@ export default function Maut({ fleet, tours, wochenKm }) {
         <div style={h2}>Toll-Collect-Einzelfahrtennachweis hochladen (CSV)</div>
         <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 14 }}>
           Im Toll-Collect-Kundenportal den Einzelfahrtennachweis als CSV herunterladen und hier auswählen – auch mehrere Monate auf einmal.
+          Für Miet-LKW geht auch der Maut-Export der Mietfirma (CSV „Maut_EFN_…“).
           Schon importierte Mautaufstellungen werden erkannt und übersprungen. Die Summe in der Vorschau sollte dem Gesamtbetrag der Mautaufstellung entsprechen.
           {letzteFahrt && <> Letzte erfasste Mautfahrt: <b>{dmy(letzteFahrt)}</b>.</>}
         </div>
@@ -441,11 +480,11 @@ export default function Maut({ fleet, tours, wochenKm }) {
             <Kpi label="Mautpflichtiger Anteil" value={gesamt.km > 0 ? `${dez((gesamt.mautKm / gesamt.km) * 100, 0)} %` : "–"} sub="Maut-km ÷ gefahrene km" />
             <Kpi label="Maut berechnet (Touren)" value={euro(gesamt.berechnet)} sub={`${touren.length.toLocaleString("de-DE")} Touren`} />
             <Kpi label="Differenz berechnet − bezahlt" value={diffText(diffGesamt)} color={diffFarbe(diffGesamt)}
-              sub={gesamt.betrag > 0 ? `Deckung ${dez((gesamt.berechnet / gesamt.betrag) * 100, 0)} %` : null} />
+              sub={gesamt.betragAbgl > 0 ? `Deckung ${dez((gesamt.berechnet / gesamt.betragAbgl) * 100, 0)} %` + (Math.abs(gesamt.betragAbgl - gesamt.betrag) > 0.005 ? ` · ggü. ${euro(gesamt.betragAbgl)} bezahlt` : "") : null} />
           </div>
-          {abgedeckt.von && (
+          {abdeckungText.length > 0 && (
             <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginTop: -10, marginBottom: 16 }}>
-              Abgleich und km nur für den Zeitraum mit Toll-Collect-Daten ({dmy(abgedeckt.von)} – {dmy(abgedeckt.bis)}).
+              Abgleich und km je LKW nur für den Zeitraum mit Mautdaten{ersteTour && <> und ab der ersten erfassten Tour ({dmy(ersteTour)})</>}: {abdeckungText.join(" · ")}.
               {nichtAbgeglichen.length > 0 && <> Nicht abgeglichen (keine Toll-Collect-Fahrten): {nichtAbgeglichen.join(", ")}.</>}
             </div>
           )}
@@ -464,7 +503,7 @@ export default function Maut({ fleet, tours, wochenKm }) {
                 </thead>
                 <tbody>
                   {proLkw.map((r) => {
-                    const d = r.berechnet - r.betrag;
+                    const d = r.berechnet - r.betragAbgl;
                     return (
                       <tr key={r.lkw}>
                         <td className="mono" style={{ fontWeight: 600 }}>{r.lkw}</td>
@@ -478,7 +517,7 @@ export default function Maut({ fleet, tours, wochenKm }) {
                         <td className="mono" style={R}>{r.touren}</td>
                         <td className="mono" style={R}>{euro(r.berechnet)}</td>
                         <td className="mono" style={{ ...R, fontWeight: 600, color: diffFarbe(d) }}>{diffText(d)}</td>
-                        <td className="mono" style={R}>{r.betrag > 0 ? `${dez((r.berechnet / r.betrag) * 100, 0)} %` : "–"}</td>
+                        <td className="mono" style={R}>{r.betragAbgl > 0 ? `${dez((r.berechnet / r.betragAbgl) * 100, 0)} %` : "–"}</td>
                       </tr>
                     );
                   })}
@@ -488,7 +527,7 @@ export default function Maut({ fleet, tours, wochenKm }) {
             </div>
             <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginTop: 10 }}>
               Gefahrene km aus dem Einsatzplan (Wochen anteilig nach Tagen). Mautanteil = mautpflichtige km ÷ gefahrene km.
-              Maut berechnet = Summe des Maut-Felds der Touren. Differenz grün = mehr berechnet als bezahlt, rot = weniger.
+              Maut berechnet = Summe des Maut-Felds der Touren. Differenz/Deckung nur im abgeglichenen Zeitraum; grün = mehr berechnet als bezahlt, rot = weniger.
             </div>
           </div>
 
@@ -503,7 +542,8 @@ export default function Maut({ fleet, tours, wochenKm }) {
                   </thead>
                   <tbody>
                     {proMonat.map((r) => {
-                      const d = r.berechnet - r.betrag;
+                      const d = r.berechnet - r.betragAbgl;
+                      const abgl = r.betragAbgl > 0 || r.touren > 0;
                       return (
                         <tr key={r.key}>
                           <td>{r.monat}{r.teil && <span style={{ fontSize: 11, color: TEXT_MUTED }}> (teilweise)</span>}</td>
@@ -511,8 +551,8 @@ export default function Maut({ fleet, tours, wochenKm }) {
                           <td className="mono" style={R}>{ganz(r.mautKm)}</td>
                           <td className="mono" style={{ ...R, fontWeight: 600 }}>{euro(r.betrag)}</td>
                           <td className="mono" style={R}>{r.mautKm > 0 ? dez(r.betrag / r.mautKm, 3) : "–"}</td>
-                          <td className="mono" style={R}>{euro(r.berechnet)}</td>
-                          <td className="mono" style={{ ...R, fontWeight: 600, color: diffFarbe(d) }}>{diffText(d)}</td>
+                          <td className="mono" style={R}>{abgl ? euro(r.berechnet) : "–"}</td>
+                          <td className="mono" style={{ ...R, fontWeight: 600, color: abgl ? diffFarbe(d) : TEXT_MUTED }}>{abgl ? diffText(d) : "–"}</td>
                         </tr>
                       );
                     })}
@@ -520,7 +560,7 @@ export default function Maut({ fleet, tours, wochenKm }) {
                 </table>
               </div>
               <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginTop: 10 }}>
-                Kalendermonate nach Fahrt- bzw. Tourdatum. Toll Collect rechnet vom 8. bis zum 7. des Folgemonats ab – „teilweise“ = für diesen Monat liegen noch nicht alle Fahrten vor.
+                Kalendermonate nach Fahrt- bzw. Tourdatum. Toll Collect rechnet beim eigenen Konto vom 8. bis zum 7. des Folgemonats ab – „teilweise“ = für diesen Monat liegen noch nicht alle Mautfahrten vor. „–“ = keine Touren in der App für diesen Zeitraum.
               </div>
             </div>
           )}

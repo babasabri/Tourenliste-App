@@ -6,6 +6,9 @@
 //               Verfahren²;km;EUR;Stornierungsgebühr in EUR
 //   Daten:      ;OF RY 500;07.09.2026;16:53;100006050661921;Maut;...;125,2;43,58;0,00
 //   Fußzeilen:  ";" und Erklärungen (¹, ²) - werden ignoriert.
+// Variante Miet-LKW (Export der Mietfirma, "Maut_EFN_..."): Kopfzelle 1 leer,
+// die Mautaufstellung-Nr. steht stattdessen in Spalte 1 jeder Datenzeile;
+// Spalten "Tarifversion", "Maut-Schadstoffklasse", "Verf.1", kein Storno.
 // Spalten werden über die Kopfzeile gesucht (nicht über feste Positionen),
 // damit eine geänderte Spaltenreihenfolge nicht zu falschen Werten führt.
 
@@ -55,12 +58,12 @@ const SPALTEN = {
   ueber: ["über", "ueber"],
   abfahrt: ["abfahrt"],
   kostenstelle: ["kostenstelle"],
-  tarifmodell: ["tarifmodell"],
+  tarifmodell: ["tarifmodell", "tarifversion"],
   achsklasse: ["achsklasse"],
   gewichtsklasse: ["gewichtsklasse"],
-  schadstoffklasse: ["schadstoffklasse"],
+  schadstoffklasse: ["schadstoffklasse", "maut-schadstoffklasse"],
   co2_klasse: ["co2 emissionsklasse", "co2-emissionsklasse"],
-  verfahren: ["verfahren"],
+  verfahren: ["verfahren", "verf.1", "verf."],
   km: ["km"],
   betrag: ["eur", "betrag"],
   storno: ["stornierungsgebühr in eur", "stornierungsgebühr"],
@@ -78,7 +81,9 @@ export async function parseMautCsv(file, fleetPlates = []) {
   if (idx.lkw < 0 || idx.datum < 0 || idx.buchungsnr < 0 || idx.betrag < 0) {
     throw new Error("Keine Toll-Collect-Einzelfahrtennachweis-CSV (Spalten Kfz-Kennz./Datum/Buchungsnummer/EUR fehlen)");
   }
-  let nr = String(splitZeile(zeilen[0])[0] || "").replace(/\D/g, "");
+  const nrBereinigt = (v) => String(v || "").replace(/[^0-9A-Za-z]/g, "");
+  let nr = nrBereinigt(splitZeile(zeilen[0])[0]);
+  const nrZeilen = new Set();
   const fleetMap = new Map(fleetPlates.map((p) => [platKey(p), p]));
 
   const positionen = [];
@@ -97,6 +102,7 @@ export async function parseMautCsv(file, fleetPlates = []) {
       continue;
     }
     const roh = get("lkw");
+    if (!nr && nrBereinigt(z[0])) nrZeilen.add(nrBereinigt(z[0]));
     positionen.push({
       buchungsnr: bnr,
       kennzeichenBeleg: roh,
@@ -123,11 +129,15 @@ export async function parseMautCsv(file, fleetPlates = []) {
 
   // Mautaufstellung-Nr. steht in der ersten Kopfzelle; ersatzweise im Dateinamen
   const fn = file.name || "";
+  if (!nr && nrZeilen.size > 1) throw new Error(`Datei enthält mehrere Mautaufstellungen (${Array.from(nrZeilen).join(", ")}) – bitte einzeln exportieren`);
+  if (!nr) nr = Array.from(nrZeilen)[0] || "";
   if (!nr) nr = (fn.match(/(\d{10})/) || [])[1] || "";
   if (!nr) throw new Error("Mautaufstellung-Nr. nicht gefunden");
   // Datum der Mautaufstellung aus dem Dateinamen (..._6101626312_081026_0030.csv)
+  // bzw. Miet-LKW-Export: Maut_EFN_<Kunde>_2026_11_05_<Zeitstempel>.csv
   const dn = fn.match(/_(\d{2})(\d{2})(\d{2})_\d{4}/);
-  const datum = dn ? `20${dn[3]}-${dn[2]}-${dn[1]}` : "";
+  const dn2 = fn.match(/_(20\d{2})_(\d{2})_(\d{2})_/);
+  const datum = dn ? `20${dn[3]}-${dn[2]}-${dn[1]}` : dn2 ? `${dn2[1]}-${dn2[2]}-${dn2[3]}` : "";
 
   const daten = positionen.map((p) => p.datum).sort();
   const doppelteBnr = positionen.length - new Set(positionen.map((p) => p.buchungsnr)).size;
