@@ -12,7 +12,7 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { Upload, Loader2, Trash2, RefreshCw, CheckCircle2, AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
-import { parseMautCsv } from "./mautParser";
+import { parseMautCsv, MAUT_START } from "./mautParser";
 import * as mdb from "./mautDb";
 
 const MARINE = "#0F2A43";
@@ -135,7 +135,7 @@ export default function Maut({ fleet, tours, wochenKm }) {
     setFehler("");
     try {
       const [d, a] = await Promise.all([mdb.fetchMautPositionen(), mdb.fetchMautAbrechnungen()]);
-      setDaten(d);
+      setDaten(d.filter((t) => t.datum >= MAUT_START));
       setAbrechnungen(a);
     } catch (e) {
       setFehler("Mautdaten konnten nicht geladen werden: " + (e.message || e));
@@ -363,7 +363,7 @@ export default function Maut({ fleet, tours, wochenKm }) {
         <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 14 }}>
           Im Toll-Collect-Kundenportal den Einzelfahrtennachweis als CSV herunterladen und hier auswählen – auch mehrere Monate auf einmal.
           Für Miet-LKW geht auch der Maut-Export der Mietfirma (CSV „Maut_EFN_…“).
-          Schon importierte Mautaufstellungen werden erkannt und übersprungen. Die Summe in der Vorschau sollte dem Gesamtbetrag der Mautaufstellung entsprechen.
+          Schon importierte Mautaufstellungen werden erkannt und übersprungen. Die Summe in der Vorschau sollte dem Gesamtbetrag der Mautaufstellung entsprechen (außer es wurden Fahrten vor 2026 ausgelassen – die App beginnt mit 2026).
           {letzteFahrt && <> Letzte erfasste Mautfahrt: <b>{dmy(letzteFahrt)}</b>.</>}
         </div>
         <label className="ghost" style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: parsing ? "wait" : "pointer", border: `1px solid ${BORDER}`, borderRadius: 6, padding: "7px 12px", fontSize: 13, color: TEXT, margin: 0, width: "auto" }}>
@@ -396,6 +396,7 @@ export default function Maut({ fleet, tours, wochenKm }) {
                         <CheckCircle2 size={13} style={{ verticalAlign: -2 }} /> OK
                         {p.doppelteBnr > 0 && <span style={{ color: AMBER_DARK }}> · {p.doppelteBnr} doppelte Buchungsnr. (nur einmal übernommen)</span>}
                         {p.fremd.length > 0 && <span style={{ color: AMBER_DARK }}> · nicht im Fuhrpark: {p.fremd.join(", ")}</span>}
+                        {p.vorStart.anzahl > 0 && <span style={{ color: TEXT_MUTED }}> · {p.vorStart.anzahl} Fahrten vor {MAUT_START.slice(0, 4)} ausgelassen ({euro(p.vorStart.summe)})</span>}
                       </span>
                     );
                     return (

@@ -12,6 +12,10 @@
 // Spalten werden über die Kopfzeile gesucht (nicht über feste Positionen),
 // damit eine geänderte Spaltenreihenfolge nicht zu falschen Werten führt.
 
+// Die App läuft ab 2026 - Mautfahrten davor werden beim Import ausgelassen
+// (z. B. Dezember-Fahrten in der Mautaufstellung 08.12.2025 - 07.01.2026).
+export const MAUT_START = "2026-01-01";
+
 const norm = (s) => String(s || "").replace(/[¹²³]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
 const platKey = (s) => String(s || "").toUpperCase().replace(/[\s-]/g, "");
 
@@ -126,6 +130,10 @@ export async function parseMautCsv(file, fleetPlates = []) {
     });
   }
   if (positionen.length === 0) throw new Error("Keine Mautfahrten in der Datei gefunden");
+  const alt = positionen.filter((p) => p.datum < MAUT_START);
+  const vorStart = { anzahl: alt.length, summe: Math.round(alt.reduce((s, p) => s + p.betrag + p.storno, 0) * 100) / 100 };
+  if (alt.length === positionen.length) throw new Error(`Nur Fahrten vor ${MAUT_START.slice(0, 4)} – wird nicht übernommen`);
+  if (alt.length) positionen.splice(0, positionen.length, ...positionen.filter((p) => p.datum >= MAUT_START));
 
   // Mautaufstellung-Nr. steht in der ersten Kopfzelle; ersatzweise im Dateinamen
   const fn = file.name || "";
@@ -155,6 +163,7 @@ export async function parseMautCsv(file, fleetPlates = []) {
     fremd,
     doppelteBnr,
     fehlerZeilen,
+    vorStart,
     dateiname: fn,
     positionen,
   };
