@@ -699,6 +699,9 @@ export default function TourenApp() {
   const [quickStatusId, setQuickStatusId] = useState(null);
   // Touren-Tab: Monatsfilter oberhalb der Liste.
   const [tourenMonat, setTourenMonat] = useState("ALLE");
+  // Touren-Tab: weitere Filter (Datum von/bis, KW, Kunde, Kennzeichen, Status, Fahrer).
+  const TOUREN_FILTER_LEER = { von: "", bis: "", kw: "ALLE", kunde: "", lkw: "ALLE", status: "ALLE", fahrer: "ALLE" };
+  const [tourenFilter, setTourenFilter] = useState(TOUREN_FILTER_LEER);
   const [dashFilters, setDashFilters] = useState({
     jahr: "ALLE", lkw: "ALLE", fahrer: "ALLE", monat: "ALLE", kw: "ALLE",
     von: "", bis: "",
@@ -1675,11 +1678,40 @@ export default function TourenApp() {
 
   // Touren-Tab: Liste inkl. Monatsfilter, neueste zuerst.
   const tourenList = useMemo(() => {
+    const f = tourenFilter;
+    const kundeQ = f.kunde.trim().toLowerCase();
     return tours
-      .filter((t) => tourenMonat === "ALLE" || Number((t.datum || "").slice(5, 7)) === Number(tourenMonat))
+      .filter((t) => {
+        if (tourenMonat !== "ALLE" && Number((t.datum || "").slice(5, 7)) !== Number(tourenMonat)) return false;
+        if (f.von && (!t.datum || t.datum < f.von)) return false;
+        if (f.bis && (!t.datum || t.datum > f.bis)) return false;
+        if (f.kw !== "ALLE" && `${isoWeekYear(t.datum)}-${isoWeek(t.datum)}` !== f.kw) return false;
+        if (kundeQ && !(t.kunde || "").toLowerCase().includes(kundeQ)) return false;
+        if (f.lkw !== "ALLE" && t.lkw !== f.lkw) return false;
+        if (f.status !== "ALLE" && t.status !== f.status) return false;
+        if (f.fahrer !== "ALLE" && t.fahrer !== f.fahrer) return false;
+        return true;
+      })
       .slice()
       .sort((a, b) => (b.datum || "").localeCompare(a.datum || ""));
-  }, [tours, tourenMonat]);
+  }, [tours, tourenMonat, tourenFilter]);
+
+  const tourenFilterAktiv = tourenMonat !== "ALLE" || JSON.stringify(tourenFilter) !== JSON.stringify(TOUREN_FILTER_LEER);
+  const tourenSumme = useMemo(() => tourenList.reduce((s, t) => s + gesamt(t), 0), [tourenList]);
+  // KW-Auswahl: nur Kalenderwochen, in denen Touren existieren (neueste zuerst);
+  // mit Jahr, sobald Touren aus mehreren Jahren vorliegen.
+  const tourenKwOptions = useMemo(() => {
+    const m = new Map();
+    tours.forEach((t) => {
+      if (!t.datum) return;
+      const j = isoWeekYear(t.datum), w = isoWeek(t.datum);
+      m.set(`${j}-${w}`, { j, w });
+    });
+    const mehrereJahre = new Set(Array.from(m.values()).map((x) => x.j)).size > 1;
+    return Array.from(m.entries())
+      .sort((a, b) => b[1].j - a[1].j || b[1].w - a[1].w)
+      .map(([value, x]) => ({ value, label: mehrereJahre ? `KW ${x.w} / ${x.j}` : `KW ${x.w}` }));
+  }, [tours]);
 
   const years = useMemo(() => {
     const s = new Set(tours.map((t) => (t.datum || "").slice(0, 4)).filter(Boolean));
@@ -2590,13 +2622,67 @@ export default function TourenApp() {
         {tab === "touren" && (
           <div>
             <PageHeading icon={Truck} title="Touren" subtitle="Alle erfassten Touren" />
-            <div style={{ display: "flex", alignItems: "flex-end", gap: 12, marginBottom: 14 }}>
-              <div style={{ width: 160 }}>
-                <label>Monat</label>
-                <select value={tourenMonat} onChange={(e) => setTourenMonat(e.target.value)}>
-                  <option value="ALLE">Alle</option>
-                  {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
-                </select>
+            <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "14px 18px", marginBottom: 14 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+                <div>
+                  <label>Datum von</label>
+                  <input type="date" value={tourenFilter.von} onChange={(e) => setTourenFilter({ ...tourenFilter, von: e.target.value })} />
+                </div>
+                <div>
+                  <label>Datum bis</label>
+                  <input type="date" value={tourenFilter.bis} onChange={(e) => setTourenFilter({ ...tourenFilter, bis: e.target.value })} />
+                </div>
+                <div>
+                  <label>Monat</label>
+                  <select value={tourenMonat} onChange={(e) => setTourenMonat(e.target.value)}>
+                    <option value="ALLE">Alle</option>
+                    {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label>KW</label>
+                  <select value={tourenFilter.kw} onChange={(e) => setTourenFilter({ ...tourenFilter, kw: e.target.value })}>
+                    <option value="ALLE">Alle</option>
+                    {tourenKwOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label>Kunde</label>
+                  <input type="text" placeholder="Name enthält…" value={tourenFilter.kunde}
+                    onChange={(e) => setTourenFilter({ ...tourenFilter, kunde: e.target.value })} />
+                </div>
+                <div>
+                  <label>Kennzeichen</label>
+                  <select value={tourenFilter.lkw} onChange={(e) => setTourenFilter({ ...tourenFilter, lkw: e.target.value })}>
+                    <option value="ALLE">Alle</option>
+                    {fleet.map((f) => <option key={f.plate} value={f.plate}>{f.plate}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label>Status</label>
+                  <select value={tourenFilter.status} onChange={(e) => setTourenFilter({ ...tourenFilter, status: e.target.value })}>
+                    <option value="ALLE">Alle</option>
+                    <option value="Offen">Offen</option>
+                    <option value="Reklamiert">Reklamiert</option>
+                    <option value="Abgerechnet">Abgerechnet</option>
+                  </select>
+                </div>
+                <div>
+                  <label>Fahrer</label>
+                  <select value={tourenFilter.fahrer} onChange={(e) => setTourenFilter({ ...tourenFilter, fahrer: e.target.value })}>
+                    <option value="ALLE">Alle</option>
+                    {allDrivers.map((d) => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 10, flexWrap: "wrap" }}>
+                <button className="ghost" disabled={!tourenFilterAktiv}
+                  onClick={() => { setTourenMonat("ALLE"); setTourenFilter(TOUREN_FILTER_LEER); }}>
+                  Filter zurücksetzen
+                </button>
+                <span style={{ fontSize: 12.5, color: TEXT_MUTED }}>
+                  {tourenList.length} von {tours.length} Touren · Summe <span className="mono" style={{ fontWeight: 600 }}>{euro(tourenSumme)}</span>
+                </span>
               </div>
             </div>
             <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
@@ -2614,7 +2700,7 @@ export default function TourenApp() {
                 <tbody>
                   {tourenList.length === 0 && (
                     <tr><td colSpan={17} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>
-                      {tourenMonat !== "ALLE" ? "Keine Touren in diesem Monat." : "Noch keine Touren erfasst."}
+                      {tourenFilterAktiv ? "Keine Touren für diese Filter." : "Noch keine Touren erfasst."}
                     </td></tr>
                   )}
                   {tourenList.map((t) => {
