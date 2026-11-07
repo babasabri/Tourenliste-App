@@ -1,6 +1,6 @@
-// Tab "Maut": Toll-Collect-Einzelfahrtennachweise (CSV) hochladen, alle
-// Mautfahrten filtern, je LKW auswerten und mit der Maut abgleichen, die in den
-// Touren an den Kunden berechnet wurde.
+// Tab "Maut": Toll-Collect-Einzelfahrtennachweise (CSV) hochladen, je LKW und
+// je Monat auswerten und mit der Maut abgleichen, die in den Touren an den
+// Kunden berechnet wurde.
 //
 // Abgleich: "bezahlt" = Summe der Toll-Collect-Fahrten, "berechnet" = Summe
 // des Maut-Felds der Touren - jeweils je LKW und Tag (Fahrtdatum bzw.
@@ -10,8 +10,8 @@
 // Gefahrene km (für "Maut-Anteil") kommen wie bei den Tankvorgängen aus dem
 // Einsatzplan, Wochen anteilig nach Tagen.
 
-import { Fragment, useEffect, useMemo, useState } from "react";
-import { Upload, Loader2, Trash2, RefreshCw, CheckCircle2, AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Upload, Loader2, Trash2, RefreshCw, CheckCircle2, AlertTriangle } from "lucide-react";
 import { parseMautCsv, MAUT_START } from "./mautParser";
 import * as mdb from "./mautDb";
 
@@ -28,7 +28,6 @@ const SUCCESS_BG = "#E7F6EF";
 const WARN_BG = "#FDF1DD";
 
 const MONATE = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
-const LISTE_MAX = 1000;
 
 const pad2 = (n) => String(n).padStart(2, "0");
 const isoOf = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -40,8 +39,6 @@ const zahl = (v) => {
   const n = Number(String(v ?? "").replace(",", "."));
   return Number.isFinite(n) ? n : 0;
 };
-const WOCHENTAG = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
-const wt = (iso) => WOCHENTAG[new Date(iso + "T12:00:00").getDay()];
 
 function isoWeekMonday(jahr, kw) {
   const d = new Date(jahr, 0, 4);
@@ -104,13 +101,6 @@ const R = { textAlign: "right" };
 const diffFarbe = (d) => (Math.abs(d) < 0.005 ? TEXT : d > 0 ? SUCCESS : DANGER);
 const diffText = (d) => (d > 0.005 ? "+" : "") + euro(d);
 
-const TAG_TYP = {
-  ohne_maut: { label: "Tour ohne Maut", farbe: DANGER, bg: DANGER_BG, tip: "Toll Collect hat Maut abgebucht, aber in den Touren dieses Tages ist keine Maut eingetragen" },
-  ohne_tour: { label: "Maut ohne Tour", farbe: AMBER_DARK, bg: WARN_BG, tip: "Maut bezahlt, aber an diesem Tag keine Tour für diesen LKW erfasst" },
-  ohne_fahrt: { label: "keine Mautfahrt", farbe: TEXT_MUTED, bg: "#F1F3F6", tip: "Maut in der Tour berechnet, aber an diesem Tag keine Toll-Collect-Fahrt" },
-  diff: { label: "", farbe: TEXT, bg: null, tip: "" },
-};
-
 export default function Maut({ fleet, tours, wochenKm }) {
   const fleetPlates = useMemo(() => (fleet || []).map((f) => f.plate), [fleet]);
   const [daten, setDaten] = useState([]);
@@ -118,7 +108,7 @@ export default function Maut({ fleet, tours, wochenKm }) {
   const [laden, setLaden] = useState(true);
   const [fehler, setFehler] = useState("");
   const heute = new Date();
-  const leer = { jahr: String(heute.getFullYear()), monat: "ALLE", lkw: "ALLE", von: "", bis: "", text: "" };
+  const leer = { jahr: String(heute.getFullYear()), monat: "ALLE", lkw: "ALLE", von: "", bis: "" };
   const [f, setF] = useState(leer);
 
   const [vorschau, setVorschau] = useState([]);
@@ -126,9 +116,6 @@ export default function Maut({ fleet, tours, wochenKm }) {
   const [importiere, setImportiere] = useState(false);
   const [meldung, setMeldung] = useState(null);
   const [zeigeAbrechnungen, setZeigeAbrechnungen] = useState(false);
-  const [tagFilter, setTagFilter] = useState("auffaellig");
-  const [diffGrenze, setDiffGrenze] = useState(20);
-  const [offenerTag, setOffenerTag] = useState(null);
 
   async function neuLaden() {
     setLaden(true);
@@ -290,54 +277,6 @@ export default function Maut({ fleet, tours, wochenKm }) {
       return { key: k, monat: `${MONATE[m - 1]} ${j}`, teil, ...map[k] };
     });
   }, [fahrten, touren, abdeckung, letzteTourJeLkw, mautLkw, f.lkw]);
-
-  // Tagesabgleich je LKW
-  const tage = useMemo(() => {
-    const map = {};
-    const add = (lkw, d) => {
-      const k = `${lkw}|${d}`;
-      return (map[k] = map[k] || { key: k, lkw, datum: d, fahrten: [], touren: [], betrag: 0, berechnet: 0, ohneMaut: 0 });
-    };
-    for (const t of fahrten) {
-      if (!istDrin(t.lkw, t.datum)) continue;
-      const x = add(t.lkw, t.datum); x.fahrten.push(t); x.betrag += t.betrag;
-    }
-    for (const t of touren) {
-      const x = add(t.lkw, t.datum); x.touren.push(t); x.berechnet += zahl(t.maut);
-      if (!t.andererAuftraggeber && zahl(t.maut) === 0) x.ohneMaut++;
-    }
-    return Object.values(map).map((x) => {
-      x.diff = x.berechnet - x.betrag;
-      x.typ = x.touren.length === 0 ? "ohne_tour"
-        : x.fahrten.length === 0 ? (x.berechnet > 0 ? "ohne_fahrt" : "diff")
-        : x.ohneMaut > 0 ? "ohne_maut" : "diff";
-      x.fahrten.sort((a, b) => a.zeit.localeCompare(b.zeit));
-      return x;
-    }).sort((a, b) => b.datum.localeCompare(a.datum) || a.lkw.localeCompare(b.lkw));
-  }, [fahrten, touren, abdeckung, ersteTour]);
-
-  const tageZaehler = useMemo(() => {
-    const z = { ohne_maut: 0, ohne_tour: 0, ohne_fahrt: 0 };
-    for (const t of tage) if (z[t.typ] !== undefined) z[t.typ]++;
-    return z;
-  }, [tage]);
-
-  const tageGefiltert = useMemo(() => tage.filter((t) => {
-    if (tagFilter === "alle") return true;
-    if (tagFilter === "auffaellig") return t.typ !== "diff" || Math.abs(t.diff) >= diffGrenze;
-    if (tagFilter === "diff") return Math.abs(t.diff) >= diffGrenze;
-    return t.typ === tagFilter;
-  }), [tage, tagFilter, diffGrenze]);
-
-  const liste = useMemo(() => {
-    const q = f.text.trim().toLowerCase();
-    return fahrten
-      .filter((t) => !q || `${t.auffahrt} ${t.ueber} ${t.abfahrt} ${t.buchungsnr}`.toLowerCase().includes(q))
-      .slice()
-      .sort((a, b) => (b.datum + b.zeit).localeCompare(a.datum + a.zeit) || a.lkw.localeCompare(b.lkw));
-  }, [fahrten, f.text]);
-  const listeSumme = liste.reduce((s, t) => s + t.betrag, 0);
-  const listeKm = liste.reduce((s, t) => s + t.km, 0);
 
   const letzteFahrt = abrechnungen.reduce((m, a) => (a.fahrtenBis && a.fahrtenBis > m ? a.fahrtenBis : m), "");
   const diffGesamt = gesamt.berechnet - gesamt.betragAbgl;
@@ -565,162 +504,6 @@ export default function Maut({ fleet, tours, wochenKm }) {
               </div>
             </div>
           )}
-
-          {/* ---------------- Tagesabgleich ---------------- */}
-          <div style={card}>
-            <div style={{ ...h2, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-              <span>Abgleich je Tag und LKW ({tageGefiltert.length})</span>
-              <span style={{ fontSize: 12, fontWeight: 400, color: TEXT_MUTED }}>
-                <span style={{ color: DANGER }}>{tageZaehler.ohne_maut} Tage Tour ohne Maut</span> · <span style={{ color: AMBER_DARK }}>{tageZaehler.ohne_tour} Tage Maut ohne Tour</span> · {tageZaehler.ohne_fahrt} Tage ohne Mautfahrt
-              </span>
-            </div>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 12 }}>
-              <div style={{ minWidth: 230 }}>
-                <label>Anzeigen</label>
-                <select value={tagFilter} onChange={(e) => setTagFilter(e.target.value)}>
-                  <option value="auffaellig">Nur Auffälligkeiten</option>
-                  <option value="ohne_maut">Tour ohne Maut (Maut nicht berechnet?)</option>
-                  <option value="ohne_tour">Maut ohne Tour</option>
-                  <option value="ohne_fahrt">Maut berechnet, keine Mautfahrt</option>
-                  <option value="diff">Differenz ab Grenze</option>
-                  <option value="alle">Alle Tage</option>
-                </select>
-              </div>
-              <div style={{ width: 150 }}>
-                <label>Differenz ab (€)</label>
-                <input type="number" min="0" step="5" value={diffGrenze} onChange={(e) => setDiffGrenze(Math.max(0, Number(e.target.value) || 0))} />
-              </div>
-            </div>
-            <div style={{ overflowX: "auto", maxHeight: 620, overflowY: "auto" }}>
-              <table>
-                <thead style={{ position: "sticky", top: 0, background: CARD, zIndex: 1 }}>
-                  <tr>
-                    <th style={{ width: 24 }}></th><th>Datum</th><th>LKW</th><th style={R}>Mautfahrten</th><th style={R}>Maut bezahlt</th>
-                    <th style={R}>Touren</th><th>Kunden</th><th style={R}>Maut berechnet</th><th style={R}>Differenz</th><th>Hinweis</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {tageGefiltert.slice(0, 600).map((t) => {
-                    const typ = TAG_TYP[t.typ];
-                    const offen = offenerTag === t.key;
-                    return (
-                      <Fragment key={t.key}>
-                        <tr onClick={() => setOffenerTag(offen ? null : t.key)} style={{ cursor: "pointer", background: typ.bg || undefined }}>
-                          <td>{offen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</td>
-                          <td className="mono">{wt(t.datum)} {dmy(t.datum)}</td>
-                          <td className="mono">{t.lkw}</td>
-                          <td className="mono" style={R}>{t.fahrten.length || "–"}</td>
-                          <td className="mono" style={R}>{t.fahrten.length ? euro(t.betrag) : "–"}</td>
-                          <td className="mono" style={R}>{t.touren.length || "–"}</td>
-                          <td style={{ fontSize: 12, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {Array.from(new Set(t.touren.map((x) => x.kunde))).join(", ")}
-                          </td>
-                          <td className="mono" style={R}>{t.touren.length ? euro(t.berechnet) : "–"}</td>
-                          <td className="mono" style={{ ...R, fontWeight: 600, color: diffFarbe(t.diff) }}>{diffText(t.diff)}</td>
-                          <td style={{ fontSize: 12, color: typ.farbe, fontWeight: 600 }} title={typ.tip}>
-                            {typ.label}{t.typ === "ohne_maut" && t.touren.length > 1 ? ` (${t.ohneMaut} von ${t.touren.length})` : ""}
-                          </td>
-                        </tr>
-                        {offen && (
-                          <tr>
-                            <td></td>
-                            <td colSpan={9} style={{ background: "#F7F9FB", padding: "10px 12px" }}>
-                              <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 16 }} className="maut-tag-detail">
-                                <div>
-                                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Touren</div>
-                                  {t.touren.length === 0 ? <div style={{ fontSize: 12, color: TEXT_MUTED }}>keine</div> : (
-                                    <table>
-                                      <thead><tr><th>Auftrag</th><th>Kunde</th><th>Ort</th><th style={R}>km</th><th style={R}>Maut</th></tr></thead>
-                                      <tbody>
-                                        {t.touren.map((x) => (
-                                          <tr key={x.id}>
-                                            <td className="mono" style={{ fontSize: 12 }}>{x.auftragsNr}</td>
-                                            <td style={{ fontSize: 12, color: x.andererAuftraggeber ? "#1D5FBF" : undefined, fontWeight: x.andererAuftraggeber ? 600 : undefined }}>{x.kunde}</td>
-                                            <td style={{ fontSize: 12 }}>{x.ort}</td>
-                                            <td className="mono" style={{ ...R, fontSize: 12 }}>{x.km}</td>
-                                            <td className="mono" style={{ ...R, fontSize: 12, color: zahl(x.maut) === 0 && !x.andererAuftraggeber ? DANGER : undefined }}>{zahl(x.maut) ? euro(zahl(x.maut)) : "–"}</td>
-                                          </tr>
-                                        ))}
-                                      </tbody>
-                                    </table>
-                                  )}
-                                </div>
-                                <div>
-                                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Mautfahrten (Toll Collect)</div>
-                                  {t.fahrten.length === 0 ? <div style={{ fontSize: 12, color: TEXT_MUTED }}>keine</div> : (
-                                    <table>
-                                      <thead><tr><th>Start</th><th>Auffahrt → Abfahrt</th><th style={R}>km</th><th style={R}>Betrag</th></tr></thead>
-                                      <tbody>
-                                        {t.fahrten.map((x) => (
-                                          <tr key={x.id}>
-                                            <td className="mono" style={{ fontSize: 12 }}>{x.zeit}</td>
-                                            <td style={{ fontSize: 12 }} title={x.ueber}>{x.auffahrt} → {x.abfahrt}</td>
-                                            <td className="mono" style={{ ...R, fontSize: 12 }}>{dez(x.km, 1)}</td>
-                                            <td className="mono" style={{ ...R, fontSize: 12 }}>{euro(x.betrag)}</td>
-                                          </tr>
-                                        ))}
-                                      </tbody>
-                                    </table>
-                                  )}
-                                </div>
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    );
-                  })}
-                  {tageGefiltert.length === 0 && <tr><td colSpan={10} style={{ color: TEXT_MUTED }}>Keine Tage für diese Auswahl.</td></tr>}
-                  {tageGefiltert.length > 600 && <tr><td colSpan={10} style={{ color: TEXT_MUTED }}>Nur die ersten 600 Tage angezeigt – Zeitraum oder LKW eingrenzen.</td></tr>}
-                </tbody>
-              </table>
-            </div>
-            <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginTop: 10 }}>
-              Zeile anklicken für Touren und Mautfahrten des Tages. Tagesweise Differenzen sind normal (Leerfahrten, Umwege, Pauschalen je Kunde) –
-              wichtig sind vor allem „Tour ohne Maut“ (Maut bezahlt, in der Tour aber nichts eingetragen) und „Maut ohne Tour“.
-              Touren anderer Auftraggeber haben kein Maut-Feld und zählen nicht als „Tour ohne Maut“.
-            </div>
-          </div>
-
-          {/* ---------------- Liste ---------------- */}
-          <div style={card}>
-            <div style={{ ...h2, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-              <span>Mautfahrten ({liste.length.toLocaleString("de-DE")})</span>
-              <span className="mono" style={{ fontSize: 13, color: MARINE }}>{ganz(listeKm)} km · {euro(listeSumme)}</span>
-            </div>
-            <div style={{ maxWidth: 360, marginBottom: 12 }}>
-              <label>Suche (Ort, Strecke, Buchungsnr.)</label>
-              <input type="text" value={f.text} placeholder="z. B. Kelsterbach" onChange={(e) => setF({ ...f, text: e.target.value })} />
-            </div>
-            <div style={{ overflowX: "auto", maxHeight: 640, overflowY: "auto" }}>
-              <table>
-                <thead style={{ position: "sticky", top: 0, background: CARD, zIndex: 1 }}>
-                  <tr>
-                    <th>Datum</th><th>Start</th><th>LKW</th><th>Auffahrt</th><th>über</th><th>Abfahrt</th>
-                    <th style={R}>km</th><th style={R}>Betrag</th><th style={R}>€/km</th><th>Buchungsnr.</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {liste.slice(0, LISTE_MAX).map((t) => (
-                    <tr key={t.id}>
-                      <td className="mono">{dmy(t.datum)}</td>
-                      <td className="mono">{t.zeit}</td>
-                      <td className="mono">{t.lkw}</td>
-                      <td style={{ fontSize: 12 }}>{t.auffahrt}</td>
-                      <td style={{ fontSize: 11.5, color: TEXT_MUTED, maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t.ueber}>{t.ueber}</td>
-                      <td style={{ fontSize: 12 }}>{t.abfahrt}</td>
-                      <td className="mono" style={R}>{dez(t.km, 1)}</td>
-                      <td className="mono" style={R}>{euro(t.betrag)}</td>
-                      <td className="mono" style={{ ...R, color: TEXT_MUTED }}>{t.km > 0 ? dez(t.betrag / t.km, 3) : "–"}</td>
-                      <td className="mono" style={{ fontSize: 12, color: TEXT_MUTED }}>{t.buchungsnr}</td>
-                    </tr>
-                  ))}
-                  {liste.length === 0 && <tr><td colSpan={10} style={{ color: TEXT_MUTED }}>Keine Einträge.</td></tr>}
-                  {liste.length > LISTE_MAX && <tr><td colSpan={10} style={{ color: TEXT_MUTED }}>Nur die neuesten {LISTE_MAX.toLocaleString("de-DE")} Fahrten angezeigt – Zeitraum oder LKW eingrenzen. Summe oben gilt für alle {liste.length.toLocaleString("de-DE")}.</td></tr>}
-                </tbody>
-              </table>
-            </div>
-          </div>
         </>
       )}
 
@@ -756,7 +539,6 @@ export default function Maut({ fleet, tours, wochenKm }) {
         @media (max-width: 820px) {
           .maut-filter-grid { grid-template-columns: repeat(2, 1fr) !important; }
           .maut-kpi-grid { grid-template-columns: repeat(2, 1fr) !important; }
-          .maut-tag-detail { grid-template-columns: 1fr !important; }
         }
         @media (min-width: 821px) and (max-width: 1250px) {
           .maut-kpi-grid { grid-template-columns: repeat(3, 1fr) !important; }
