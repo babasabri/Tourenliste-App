@@ -7,13 +7,14 @@ import {
   LayoutDashboard, Truck, PlusCircle, Search as SearchIcon, Users,
   Fuel, X, Save, Trash2, Pencil, AlertTriangle, CalendarClock, Upload, ListChecks, RefreshCw,
   TrendingUp, MapPin, FileDown, FileText, FileSpreadsheet, FileScan, Loader2, Menu,
-  Receipt, CheckCircle2, HelpCircle, Play, Inbox,
+  Receipt, CheckCircle2, HelpCircle, Play, Inbox, Coins,
 } from "lucide-react";
 import * as db from "./db";
 import { parseGutschriftPdf } from "./gutschriftParser";
 import { supabase } from "./supabaseClient";
 import FrachtbriefEingang from "./FrachtbriefEingang";
 import Tankvorgaenge from "./Tankvorgaenge";
+import Maut from "./Maut";
 // Export-Bibliotheken (jsPDF, ExcelJS) sind vergleichsweise groß - werden per
 // dynamic import() erst geladen, wenn der Export-Tab tatsächlich genutzt wird,
 // statt das Hauptbundle für alle Nutzer aufzublähen (siehe handleExportPdf/
@@ -2270,6 +2271,7 @@ export default function TourenApp() {
     { id: "reklamationen", label: "Reklamationen", icon: AlertTriangle },
     { id: "gutschriften", label: "Gutschriften", icon: Receipt },
     { id: "tanken", label: "Tankvorgänge", icon: Fuel },
+    { id: "maut", label: "Maut", icon: Coins },
     { id: "einsatz", label: "Einsatzplan", icon: CalendarClock },
     { id: "stamm", label: "Stammdaten", icon: Users },
     { id: "import", label: "Import", icon: Upload },
@@ -3018,6 +3020,13 @@ export default function TourenApp() {
           <div>
             <PageHeading icon={Fuel} title="Tankvorgänge" subtitle="Tankpool-Rechnungen, Verbrauch und Tankkosten je LKW" />
             <Tankvorgaenge fleet={fleet} wochenKm={einsatzHistory} />
+          </div>
+        )}
+
+        {tab === "maut" && (
+          <div>
+            <PageHeading icon={Coins} title="Maut" subtitle="Toll-Collect-Abrechnungen, Maut je LKW und Abgleich mit den Touren" />
+            <Maut fleet={fleet} tours={tours} wochenKm={einsatzHistory} />
           </div>
         )}
 
