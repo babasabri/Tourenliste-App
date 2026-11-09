@@ -101,7 +101,7 @@ const R = { textAlign: "right" };
 const diffFarbe = (d) => (Math.abs(d) < 0.005 ? TEXT : d > 0 ? SUCCESS : DANGER);
 const diffText = (d) => (d > 0.005 ? "+" : "") + euro(d);
 
-export default function Maut({ fleet, tours, wochenKm }) {
+export default function Maut({ fleet, tours, wochenKm, startFilter, onFilterChange }) {
   const fleetPlates = useMemo(() => (fleet || []).map((f) => f.plate), [fleet]);
   const [daten, setDaten] = useState([]);
   const [abrechnungen, setAbrechnungen] = useState([]);
@@ -109,7 +109,9 @@ export default function Maut({ fleet, tours, wochenKm }) {
   const [fehler, setFehler] = useState("");
   const heute = new Date();
   const leer = { jahr: String(heute.getFullYear()), monat: "ALLE", lkw: "ALLE", von: "", bis: "" };
-  const [f, setF] = useState(leer);
+  const [f, setF] = useState({ ...leer, ...(startFilter || {}) });
+  // Zeitraum/LKW an den Fuhrpark-Rahmen melden (gemeinsamer Filter der Reiter)
+  useEffect(() => { onFilterChange && onFilterChange(f); }, [f.jahr, f.monat, f.lkw, f.von, f.bis]);
 
   const [vorschau, setVorschau] = useState([]);
   const [parsing, setParsing] = useState(false);

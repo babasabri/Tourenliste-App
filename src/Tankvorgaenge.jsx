@@ -200,14 +200,16 @@ function Kpi({ label, value, sub }) {
 const card = { background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 20, marginBottom: 20 };
 const h2 = { fontSize: 15, fontWeight: 600, marginBottom: 12, color: TEXT };
 
-export default function Tankvorgaenge({ fleet, wochenKm }) {
+export default function Tankvorgaenge({ fleet, wochenKm, startFilter, onFilterChange }) {
   const fleetPlates = useMemo(() => (fleet || []).map((f) => f.plate), [fleet]);
   const [daten, setDaten] = useState([]);
   const [rechnungen, setRechnungen] = useState([]);
   const [laden, setLaden] = useState(true);
   const [fehler, setFehler] = useState("");
   const heute = new Date();
-  const [f, setF] = useState({ jahr: String(heute.getFullYear()), monat: "ALLE", lkw: "ALLE", kategorie: "ALLE", quelle: "ALLE", von: "", bis: "" });
+  const [f, setF] = useState({ jahr: String(heute.getFullYear()), monat: "ALLE", lkw: "ALLE", kategorie: "ALLE", quelle: "ALLE", von: "", bis: "", ...(startFilter || {}) });
+  // Zeitraum/LKW an den Fuhrpark-Rahmen melden (gemeinsamer Filter der Reiter)
+  useEffect(() => { onFilterChange && onFilterChange(f); }, [f.jahr, f.monat, f.lkw, f.von, f.bis]);
 
   // Upload
   const [vorschau, setVorschau] = useState([]); // [{dateiname, ok, fehler, parsed, schonDa}]

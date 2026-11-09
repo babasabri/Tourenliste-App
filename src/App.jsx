@@ -7,14 +7,13 @@ import {
   LayoutDashboard, Truck, PlusCircle, Search as SearchIcon, Users,
   Fuel, X, Save, Trash2, Pencil, AlertTriangle, CalendarClock, Upload, ListChecks, RefreshCw,
   TrendingUp, MapPin, FileDown, FileText, FileSpreadsheet, FileScan, Loader2, Menu,
-  Receipt, CheckCircle2, HelpCircle, Play, Inbox, Coins,
+  Receipt, CheckCircle2, HelpCircle, Play, Inbox, Coins, Gauge,
 } from "lucide-react";
 import * as db from "./db";
 import { parseGutschriftPdf } from "./gutschriftParser";
 import { supabase } from "./supabaseClient";
 import FrachtbriefEingang from "./FrachtbriefEingang";
-import Tankvorgaenge from "./Tankvorgaenge";
-import Maut from "./Maut";
+import Fuhrpark from "./Fuhrpark";
 // Export-Bibliotheken (jsPDF, ExcelJS) sind vergleichsweise groß - werden per
 // dynamic import() erst geladen, wenn der Export-Tab tatsächlich genutzt wird,
 // statt das Hauptbundle für alle Nutzer aufzublähen (siehe handleExportPdf/
@@ -651,6 +650,7 @@ export default function TourenApp() {
   const [einsatz, setEinsatz] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("dashboard");
+  const [fuhrparkReiter, setFuhrparkReiter] = useState("uebersicht");
   // Mobile: Seitenleiste ist per Default eingeklappt (offscreen) und wird über
   // den Hamburger-Button in der mobilen Kopfleiste ein-/ausgeblendet.
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -2270,8 +2270,7 @@ export default function TourenApp() {
     { id: "suche", label: "Suche", icon: SearchIcon },
     { id: "reklamationen", label: "Reklamationen", icon: AlertTriangle },
     { id: "gutschriften", label: "Gutschriften", icon: Receipt },
-    { id: "tanken", label: "Tankvorgänge", icon: Fuel },
-    { id: "maut", label: "Maut", icon: Coins },
+    { id: "fuhrpark", label: "Fuhrpark", icon: Gauge },
     { id: "einsatz", label: "Einsatzplan", icon: CalendarClock },
     { id: "stamm", label: "Stammdaten", icon: Users },
     { id: "import", label: "Import", icon: Upload },
@@ -3016,17 +3015,10 @@ export default function TourenApp() {
           </div>
         )}
 
-        {tab === "tanken" && (
+        {tab === "fuhrpark" && (
           <div>
-            <PageHeading icon={Fuel} title="Tankvorgänge" subtitle="Tankpool-Rechnungen, Verbrauch und Tankkosten je LKW" />
-            <Tankvorgaenge fleet={fleet} wochenKm={einsatzHistory} />
-          </div>
-        )}
-
-        {tab === "maut" && (
-          <div>
-            <PageHeading icon={Coins} title="Maut" subtitle="Toll-Collect-Abrechnungen, Maut je LKW und Abgleich mit den Touren" />
-            <Maut fleet={fleet} tours={tours} wochenKm={einsatzHistory} />
+            <PageHeading icon={Gauge} title="Fuhrpark" subtitle="Kosten je LKW: Tankvorgänge, Maut und Ersatzteile – einzeln und zusammen" />
+            <Fuhrpark fleet={fleet} tours={tours} wochenKm={einsatzHistory} umsatzVon={gesamt} reiter={fuhrparkReiter} onReiter={setFuhrparkReiter} />
           </div>
         )}
 
