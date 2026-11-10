@@ -118,6 +118,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
   const [maut, setMaut] = useState([]);
   const [teile, setTeile] = useState([]);
   const [raten, setRaten] = useState([]);
+  const [vertraege, setVertraege] = useState([]);
   const [laden, setLaden] = useState(true);
   const [fehler, setFehler] = useState("");
 
@@ -125,12 +126,13 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
     setLaden(true);
     setFehler("");
     try {
-      const [t, tr, m, e, lr] = await Promise.all([tdb.fetchTankvorgaenge(), tdb.fetchTankpoolRechnungen(), mdb.fetchMautPositionen(), edb.fetchPositionen(), ldb.fetchRaten()]);
+      const [t, tr, m, e, lr, lf] = await Promise.all([tdb.fetchTankvorgaenge(), tdb.fetchTankpoolRechnungen(), mdb.fetchMautPositionen(), edb.fetchPositionen(), ldb.fetchRaten(), ldb.fetchFahrzeuge()]);
       setTank(t);
       setTankRe(tr);
       setMaut(m.filter((x) => x.datum >= MAUT_START));
       setTeile(e);
       setRaten(lr);
+      setVertraege(lf);
     } catch (err) {
       setFehler("Daten konnten nicht geladen werden: " + (err.message || err));
     }
@@ -221,6 +223,8 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
   }, [tank, maut, fleetPlates]);
 
   const { rows, sum } = auswertung;
+  // Schlussraten (Einmalzahlung bei Übernahme ins Eigentum) - getrennt, nicht in Kosten/km
+  const schlussraten = vertraege.filter((v) => v.schlussrateBetrag && v.schlussrateDatum && drin(v.schlussrateDatum) && (f.lkw === "ALLE" || v.kennzeichen === f.lkw));
   const proKm = (e, k) => (k > 0 ? e / k : null);
   const maxKostenKm = Math.max(0, ...rows.map((r) => proKm(r.kosten, r.km) || 0));
 
@@ -362,6 +366,13 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
                 <> Nicht enthalten: Ersatzteile „Lager“ {euro(auswertung.lager)}{auswertung.offen !== 0 && <>, ohne Fahrzeug {euro(auswertung.offen)}</>}.</>
               )}
               {" "}Nicht erfasst sind Fahrerlohn, Versicherung, Steuer und Werkstattlohn.
+              {schlussraten.length > 0 && (
+                <div style={{ marginTop: 6, color: TEXT }}>
+                  <b>Schlussraten im Zeitraum (nicht in den Kosten oben enthalten):</b>{" "}
+                  {schlussraten.map((v) => `${v.kennzeichen} ${euro(v.schlussrateBetrag)} am ${dmy(v.schlussrateDatum)}`).join(" · ")}
+                  {" "}= {euro(schlussraten.reduce((s, v) => s + v.schlussrateBetrag, 0))}
+                </div>
+              )}
             </div>
           </div>
 

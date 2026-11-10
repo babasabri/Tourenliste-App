@@ -35,14 +35,17 @@ function parseBetrag(s) {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : NaN;
 }
 
+const BADGE = { Leasing: ["#E4ECF5", MARINE], Miete: ["#FDF1DD", "#8A5A10"], Eigentum: ["#E7F6EF", "#2F8F6B"] };
 function Badge({ art }) {
-  const miete = art === "Miete";
+  const [bg, fg] = BADGE[art] || BADGE.Leasing;
   return (
-    <span style={{ fontSize: 10.5, fontWeight: 600, padding: "2px 7px", borderRadius: 10, background: miete ? "#FDF1DD" : "#E4ECF5", color: miete ? "#8A5A10" : MARINE }}>
-      {art}
+    <span style={{ fontSize: 10.5, fontWeight: 600, padding: "2px 7px", borderRadius: 10, background: bg, color: fg }}>
+      {art === "Eigentum" ? "Eigentum (abbezahlt)" : art}
     </span>
   );
 }
+const ARTEN = [["Leasing", "Leasing"], ["Miete", "Miete"], ["Eigentum", "Eigentum (abbezahlt)"]];
+const dmy = (iso) => (iso ? iso.slice(0, 10).split("-").reverse().join(".") : "");
 
 export default function Leasing() {
   const heute = new Date();
@@ -107,7 +110,7 @@ export default function Leasing() {
     const monat = monate[idx];
     const vor = idx === 0 ? `${jahr - 1}-12` : monate[idx - 1];
     const rows = fahrzeuge
-      .filter((f) => rateMap[`${f.kennzeichen}|${monat}`] === undefined && rateMap[`${f.kennzeichen}|${vor}`] !== undefined)
+      .filter((f) => !ldb.nachAbbezahlt(f, monat) && rateMap[`${f.kennzeichen}|${monat}`] === undefined && rateMap[`${f.kennzeichen}|${vor}`] !== undefined)
       .map((f) => ({ kennzeichen: f.kennzeichen, monat, betrag: rateMap[`${f.kennzeichen}|${vor}`] }));
     if (!rows.length) return;
     try {
@@ -182,7 +185,8 @@ export default function Leasing() {
         </div>
         <div style={{ fontSize: 12, color: TEXT_MUTED, marginBottom: 12 }}>
           Betrag in die Zelle tippen (z. B. <span className="mono">1.850,00</span>) – gespeichert wird beim Verlassen der Zelle, leere Zelle löscht die Rate.
-          „wie Vormonat“ füllt die leeren Zellen eines Monats mit der Rate aus dem Monat davor.
+          „wie Vormonat“ füllt die leeren Zellen eines Monats mit der Rate aus dem Monat davor. Nach dem Abbezahlt-Datum steht „abbezahlt“ (Doppelklick, falls doch noch eine Rate kam).
+          Schlussraten gehören nicht ins Raster, sondern unten zum Vertrag.
         </div>
         <div style={{ overflowX: "auto" }}>
           <table>
@@ -207,10 +211,21 @@ export default function Leasing() {
                   <td style={{ position: "sticky", left: 0, background: CARD, zIndex: 1, whiteSpace: "nowrap" }}>
                     <div className="mono" style={{ fontWeight: 600 }}>{f.kennzeichen}</div>
                     <Badge art={f.art} />
+                    {f.abbezahltAm && <div style={{ fontSize: 10.5, color: TEXT_MUTED, marginTop: 2 }}>abbezahlt {dmy(f.abbezahltAm)}</div>}
                   </td>
                   {monate.map((m) => {
                     const key = `${f.kennzeichen}|${m}`;
                     const wert = rateMap[key];
+                    if (wert === undefined && !(key in entwurf) && ldb.nachAbbezahlt(f, m)) {
+                      return (
+                        <td key={m} style={{ padding: "6px 4px" }}>
+                          <div title={`Abbezahlt am ${dmy(f.abbezahltAm)} – keine Rate mehr`} onDoubleClick={() => setEntwurf((d) => ({ ...d, [key]: "" }))}
+                            style={{ width: 84, textAlign: "center", fontSize: 10.5, color: "#2F8F6B", padding: "6px 0", background: "#F1F8F4", borderRadius: 6 }}>
+                            abbezahlt
+                          </div>
+                        </td>
+                      );
+                    }
                     return (
                       <td key={m} style={{ padding: "6px 4px" }}>
                         <input className="mono" inputMode="decimal" value={key in entwurf ? entwurf[key] : fmt(wert)} placeholder="–"
@@ -240,23 +255,47 @@ export default function Leasing() {
         <div style={{ overflowX: "auto" }}>
           <table>
             <thead>
-              <tr><th>Kennzeichen</th><th>Art</th><th>Leasinggeber / Vermieter</th><th>Vertrags-Nr.</th><th>Bemerkung</th><th style={right}>Raten erfasst</th><th></th></tr>
+              <tr>
+                <th>Kennzeichen</th><th>Art</th><th>Leasinggeber / Vermieter</th><th>Vertrags-Nr.</th>
+                <th>abbezahlt am</th><th>Schlussrate am</th><th style={right}>Schlussrate netto</th>
+                <th>Bemerkung</th><th style={right}>Raten erfasst</th><th></th>
+              </tr>
             </thead>
             <tbody>
               {fahrzeuge.map((f) => (
                 <tr key={f.kennzeichen}>
                   <td className="mono" style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{f.kennzeichen}</td>
                   <td>
-                    <select value={f.art} onChange={(e) => fahrzeugAendern(f.kennzeichen, { art: e.target.value })} style={{ width: 110 }}>
-                      <option>Leasing</option>
-                      <option>Miete</option>
+                    <select value={f.art} onChange={(e) => fahrzeugAendern(f.kennzeichen, { art: e.target.value })} style={{ width: 170 }}>
+                      {ARTEN.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                     </select>
                   </td>
-                  {["vertragspartner", "vertragNr", "bemerkung"].map((feld) => (
+                  {["vertragspartner", "vertragNr"].map((feld) => (
                     <td key={feld}>
                       <input defaultValue={f[feld]} key={`${f.kennzeichen}-${feld}-${f[feld]}`}
                         onBlur={(e) => { if (e.target.value !== f[feld]) fahrzeugAendern(f.kennzeichen, { [feld]: e.target.value }); }}
-                        style={{ minWidth: feld === "bemerkung" ? 200 : 140 }} />
+                        style={{ minWidth: 140 }} />
+                    </td>
+                  ))}
+                  {["abbezahltAm", "schlussrateDatum"].map((feld) => (
+                    <td key={feld}>
+                      <input type="date" value={f[feld]} onChange={(e) => fahrzeugAendern(f.kennzeichen, { [feld]: e.target.value })} style={{ width: 140 }} />
+                    </td>
+                  ))}
+                  <td>
+                    <input className="mono" inputMode="decimal" placeholder="–" key={`${f.kennzeichen}-sr-${f.schlussrateBetrag}`} defaultValue={fmt(f.schlussrateBetrag)}
+                      onBlur={(e) => {
+                        const v = parseBetrag(e.target.value);
+                        if (Number.isNaN(v)) { setFehler(`Schlussrate ${f.kennzeichen}: „${e.target.value}“ ist kein Betrag`); return; }
+                        if (v !== f.schlussrateBetrag) fahrzeugAendern(f.kennzeichen, { schlussrateBetrag: v });
+                      }}
+                      style={{ width: 110, textAlign: "right" }} />
+                  </td>
+                  {["bemerkung"].map((feld) => (
+                    <td key={feld}>
+                      <input defaultValue={f[feld]} key={`${f.kennzeichen}-${feld}-${f[feld]}`}
+                        onBlur={(e) => { if (e.target.value !== f[feld]) fahrzeugAendern(f.kennzeichen, { [feld]: e.target.value }); }}
+                        style={{ minWidth: 200 }} />
                     </td>
                   ))}
                   <td className="mono" style={right}>{raten.filter((r) => r.kennzeichen === f.kennzeichen).length}</td>
@@ -274,9 +313,8 @@ export default function Leasing() {
           </div>
           <div>
             <label>Art</label>
-            <select value={neu.art} onChange={(e) => setNeu({ ...neu, art: e.target.value })} style={{ width: 110 }}>
-              <option>Leasing</option>
-              <option>Miete</option>
+            <select value={neu.art} onChange={(e) => setNeu({ ...neu, art: e.target.value })} style={{ width: 170 }}>
+              {ARTEN.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
             </select>
           </div>
           <button className="ghost" onClick={fahrzeugAnlegen} disabled={!neu.kennzeichen.trim()}><Plus size={14} /> Anlegen</button>

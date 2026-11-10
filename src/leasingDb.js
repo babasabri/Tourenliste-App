@@ -13,6 +13,9 @@ export async function fetchFahrzeuge() {
     vertragNr: r.vertrag_nr || "",
     bemerkung: r.bemerkung || "",
     reihenfolge: r.reihenfolge,
+    abbezahltAm: r.abbezahlt_am || "",
+    schlussrateDatum: r.schlussrate_datum || "",
+    schlussrateBetrag: r.schlussrate_betrag === null || r.schlussrate_betrag === undefined ? null : Number(r.schlussrate_betrag),
   }));
 }
 
@@ -27,6 +30,9 @@ export async function updateFahrzeug(kennzeichen, patch) {
   if (patch.vertragspartner !== undefined) p.vertragspartner = patch.vertragspartner || null;
   if (patch.vertragNr !== undefined) p.vertrag_nr = patch.vertragNr || null;
   if (patch.bemerkung !== undefined) p.bemerkung = patch.bemerkung || null;
+  if (patch.abbezahltAm !== undefined) p.abbezahlt_am = patch.abbezahltAm || null;
+  if (patch.schlussrateDatum !== undefined) p.schlussrate_datum = patch.schlussrateDatum || null;
+  if (patch.schlussrateBetrag !== undefined) p.schlussrate_betrag = patch.schlussrateBetrag;
   const { error } = await supabase.from("leasing_fahrzeuge").update(p).eq("kennzeichen", kennzeichen);
   if (error) throw error;
 }
@@ -88,4 +94,9 @@ export function leasingJeLkw(raten, start, ende) {
     out[r.kennzeichen] = (out[r.kennzeichen] || 0) + (r.betrag * drin) / tage;
   }
   return out;
+}
+
+// Monat (YYYY-MM) liegt nach dem Abbezahlt-Monat -> keine Rate mehr erwartet
+export function nachAbbezahlt(fahrzeug, monat) {
+  return !!(fahrzeug && fahrzeug.abbezahltAm && monat > fahrzeug.abbezahltAm.slice(0, 7));
 }
