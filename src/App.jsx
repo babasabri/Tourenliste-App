@@ -3017,7 +3017,7 @@ export default function TourenApp() {
 
         {tab === "fuhrpark" && (
           <div>
-            <PageHeading icon={Gauge} title="Fuhrpark" subtitle="Kosten je LKW: Tankvorgänge, Maut und Ersatzteile – einzeln und zusammen" />
+            <PageHeading icon={Gauge} title="Fuhrpark" subtitle="Kosten je LKW: Tankvorgänge, Maut, Ersatzteile und Leasing/Miete – einzeln und zusammen" />
             <Fuhrpark fleet={fleet} tours={tours} wochenKm={einsatzHistory} umsatzVon={gesamt} reiter={fuhrparkReiter} onReiter={setFuhrparkReiter} />
           </div>
         )}

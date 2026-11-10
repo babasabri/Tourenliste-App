@@ -12,13 +12,15 @@
 // UND Mautdaten vorliegen - sonst zählten km ohne die zugehörigen Kosten.
 
 import { useEffect, useMemo, useState } from "react";
-import { LayoutGrid, Fuel, Coins, Wrench, Loader2, RefreshCw, Info } from "lucide-react";
+import { LayoutGrid, Fuel, Coins, Wrench, KeyRound, Loader2, RefreshCw, Info } from "lucide-react";
 import Tankvorgaenge from "./Tankvorgaenge";
 import Maut from "./Maut";
 import Ersatzteile from "./Ersatzteile";
+import Leasing from "./Leasing";
 import * as tdb from "./tankDb";
 import * as mdb from "./mautDb";
 import * as edb from "./ersatzteilDb";
+import * as ldb from "./leasingDb";
 import { MAUT_START } from "./mautParser";
 
 const MARINE = "#0F2A43";
@@ -38,6 +40,7 @@ const REITER = [
   { id: "tanken", label: "Tankvorgänge", icon: Fuel },
   { id: "maut", label: "Maut", icon: Coins },
   { id: "ersatzteile", label: "Ersatzteile", icon: Wrench },
+  { id: "leasing", label: "Leasing/Miete", icon: KeyRound },
 ];
 const MONATE = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
 
@@ -114,6 +117,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
   const [tankRe, setTankRe] = useState([]);
   const [maut, setMaut] = useState([]);
   const [teile, setTeile] = useState([]);
+  const [raten, setRaten] = useState([]);
   const [laden, setLaden] = useState(true);
   const [fehler, setFehler] = useState("");
 
@@ -121,11 +125,12 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
     setLaden(true);
     setFehler("");
     try {
-      const [t, tr, m, e] = await Promise.all([tdb.fetchTankvorgaenge(), tdb.fetchTankpoolRechnungen(), mdb.fetchMautPositionen(), edb.fetchPositionen()]);
+      const [t, tr, m, e, lr] = await Promise.all([tdb.fetchTankvorgaenge(), tdb.fetchTankpoolRechnungen(), mdb.fetchMautPositionen(), edb.fetchPositionen(), ldb.fetchRaten()]);
       setTank(t);
       setTankRe(tr);
       setMaut(m.filter((x) => x.datum >= MAUT_START));
       setTeile(e);
+      setRaten(lr);
     } catch (err) {
       setFehler("Daten konnten nicht geladen werden: " + (err.message || err));
     }
@@ -155,7 +160,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
 
   const auswertung = useMemo(() => {
     const zeilen = {};
-    const z = (lkw) => (zeilen[lkw] = zeilen[lkw] || { lkw, km: 0, umsatz: 0, touren: 0, diesel: 0, neben: 0, maut: 0, teile: 0 });
+    const z = (lkw) => (zeilen[lkw] = zeilen[lkw] || { lkw, km: 0, umsatz: 0, touren: 0, diesel: 0, neben: 0, maut: 0, teile: 0, leasing: 0 });
     for (const t of tank) if (drin(t.datum)) { const r = z(t.lkw); if (t.kategorie === "neben") r.neben += t.wert; else r.diesel += t.wert; }
     for (const m of maut) if (drin(m.datum)) z(m.lkw).maut += m.betrag;
     let lager = 0, offen = 0;
@@ -169,35 +174,41 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
     for (const t of tours || []) if (drin(t.datum) && t.lkw) { const r = z(t.lkw); r.umsatz += umsatzVon(t); r.touren++; }
     const km = kmJeLkw(wochenKm, start, ende);
     for (const [lkw, k] of Object.entries(km)) z(lkw).km += k;
+    for (const [lkw, b] of Object.entries(ldb.leasingJeLkw(raten, start, ende))) z(lkw).leasing += b;
     const reihenfolge = [...fleetPlates, ...Object.keys(zeilen).filter((p) => !fleetPlates.includes(p)).sort()];
-    const rows = reihenfolge.map((p) => zeilen[p]).filter((r) => r && (r.km || r.umsatz || r.diesel || r.neben || r.maut || r.teile))
+    const rows = reihenfolge.map((p) => zeilen[p]).filter((r) => r && (r.km || r.umsatz || r.diesel || r.neben || r.maut || r.teile || r.leasing))
       .filter((r) => f.lkw === "ALLE" || r.lkw === f.lkw)
-      .map((r) => ({ ...r, kosten: r.diesel + r.neben + r.maut + r.teile }));
+      .map((r) => ({ ...r, kosten: r.diesel + r.neben + r.maut + r.teile + r.leasing }));
     const sum = rows.reduce((s, r) => {
-      for (const k of ["km", "umsatz", "touren", "diesel", "neben", "maut", "teile", "kosten"]) s[k] += r[k];
+      for (const k of ["km", "umsatz", "touren", "diesel", "neben", "maut", "teile", "leasing", "kosten"]) s[k] += r[k];
       return s;
-    }, { km: 0, umsatz: 0, touren: 0, diesel: 0, neben: 0, maut: 0, teile: 0, kosten: 0 });
+    }, { km: 0, umsatz: 0, touren: 0, diesel: 0, neben: 0, maut: 0, teile: 0, leasing: 0, kosten: 0 });
     return { rows, sum, lager: f.lkw === "ALLE" ? lager : 0, offen: f.lkw === "ALLE" ? offen : 0 };
-  }, [tank, maut, teile, tours, wochenKm, start, ende, f.lkw, fleetPlates]);
+  }, [tank, maut, teile, raten, tours, wochenKm, start, ende, f.lkw, fleetPlates]);
 
   // Verlauf je Monat (Kosten nach Quelle), gleiche Kappung
   const proMonat = useMemo(() => {
     const map = {};
-    const m = (d) => (map[d.slice(0, 7)] = map[d.slice(0, 7)] || { diesel: 0, neben: 0, maut: 0, teile: 0, umsatz: 0 });
+    const m = (d) => (map[d.slice(0, 7)] = map[d.slice(0, 7)] || { diesel: 0, neben: 0, maut: 0, teile: 0, leasing: 0, umsatz: 0 });
     const lkwOk = (l) => f.lkw === "ALLE" || l === f.lkw;
     for (const t of tank) if (drin(t.datum) && lkwOk(t.lkw)) { const r = m(t.datum); if (t.kategorie === "neben") r.neben += t.wert; else r.diesel += t.wert; }
     for (const x of maut) if (drin(x.datum) && lkwOk(x.lkw)) m(x.datum).maut += x.betrag;
     for (const e of teile) if (drin(e.datum) && e.lkw && e.lkw !== "Lager" && lkwOk(e.lkw)) m(e.datum).teile += e.netto + e.pfand;
     for (const t of tours || []) if (drin(t.datum) && lkwOk(t.lkw)) m(t.datum).umsatz += umsatzVon(t);
+    for (const r of raten) {
+      if (!lkwOk(r.kennzeichen)) continue;
+      const anteil = ldb.leasingJeLkw([r], start, ende)[r.kennzeichen];
+      if (anteil) m(`${r.monat}-01`).leasing += anteil;
+    }
     return Object.keys(map).sort().reverse().map((k) => {
       const [j, mo] = k.split("-").map(Number);
       const ms = `${k}-01`, me = isoOf(new Date(j, mo, 0));
       const kmMap = kmJeLkw(wochenKm, start && start > ms ? start : ms, ende && ende < me ? ende : me);
       const km = f.lkw === "ALLE" ? Object.values(kmMap).reduce((s, v) => s + v, 0) : kmMap[f.lkw] || 0;
       const r = map[k];
-      return { monat: `${MONATE[mo - 1]} ${j}`, ...r, kosten: r.diesel + r.neben + r.maut + r.teile, km };
+      return { monat: `${MONATE[mo - 1]} ${j}`, ...r, kosten: r.diesel + r.neben + r.maut + r.teile + r.leasing, km };
     });
-  }, [tank, maut, teile, tours, wochenKm, start, ende, f.lkw]);
+  }, [tank, maut, teile, raten, tours, wochenKm, start, ende, f.lkw]);
 
   const jahre = useMemo(() => {
     const s = new Set([...tank, ...maut].map((t) => (t.datum || "").slice(0, 4)).filter(Boolean));
@@ -271,13 +282,13 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
           )}
 
           <div className="fp-kpi-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginBottom: 20 }}>
-            <Kpi label="Fahrzeugkosten gesamt" value={euro(sum.kosten)} sub="Diesel, AdBlue, Tank-Nebenk., Maut, Ersatzteile" />
+            <Kpi label="Fahrzeugkosten gesamt" value={euro(sum.kosten)} sub="Diesel, AdBlue, Tank-Nebenk., Maut, Ersatzteile, Leasing/Miete" />
             <Kpi label="Kosten pro km" value={proKm(sum.kosten, sum.km) ? `${dez(proKm(sum.kosten, sum.km))} €` : "–"} sub={`${kmTxt(sum.km)} km lt. Einsatzplan`} />
             <Kpi label="Umsatz" value={euro(sum.umsatz)} sub={`${sum.touren.toLocaleString("de-DE")} Touren · ${proKm(sum.umsatz, sum.km) ? dez(proKm(sum.umsatz, sum.km)) + " €/km" : "–"}`} />
             <Kpi label="Umsatz − Fahrzeugkosten" value={euro(sum.umsatz - sum.kosten)} accent={sum.umsatz - sum.kosten >= 0 ? SUCCESS : DANGER}
-              sub={sum.umsatz ? `${Math.round(((sum.umsatz - sum.kosten) / sum.umsatz) * 100)} % vom Umsatz · ohne Fahrer, Leasing, Versicherung` : null} />
+              sub={sum.umsatz ? `${Math.round(((sum.umsatz - sum.kosten) / sum.umsatz) * 100)} % vom Umsatz · ohne Fahrer, Versicherung, Steuer` : null} />
             <Kpi label="Anteile der Kosten" value={sum.kosten ? `${Math.round((sum.diesel / sum.kosten) * 100)} % Diesel` : "–"}
-              sub={sum.kosten ? `Maut ${Math.round((sum.maut / sum.kosten) * 100)} % · Teile ${Math.round((sum.teile / sum.kosten) * 100)} % · Neben ${Math.round((sum.neben / sum.kosten) * 100)} %` : null} />
+              sub={sum.kosten ? `Maut ${Math.round((sum.maut / sum.kosten) * 100)} % · Leasing/Miete ${Math.round((sum.leasing / sum.kosten) * 100)} % · Teile ${Math.round((sum.teile / sum.kosten) * 100)} %` : null} />
           </div>
 
           <div style={card}>
@@ -288,7 +299,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
                   <tr>
                     <th>LKW</th><th style={right}>km</th><th style={right}>Umsatz</th><th style={right}>Umsatz/km</th>
                     <th style={right}>Diesel + AdBlue</th><th style={right}>Tank-Nebenk.</th><th style={right}>Maut</th><th style={right}>Ersatzteile</th>
-                    <th style={right}>Kosten gesamt</th><th style={right}>Kosten/km</th><th style={right}>Umsatz − Kosten</th>
+                    <th style={right}>Leasing/Miete</th><th style={right}>Kosten gesamt</th><th style={right}>Kosten/km</th><th style={right}>Umsatz − Kosten</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -308,6 +319,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
                         <td className="mono" style={right}>{r.neben ? euro(r.neben) : "–"}</td>
                         <td className="mono" style={right}>{euro(r.maut)}</td>
                         <td className="mono" style={right}>{r.teile ? euro(r.teile) : "–"}</td>
+                        <td className="mono" style={right}>{r.leasing ? euro(r.leasing) : "–"}</td>
                         <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(r.kosten)}</td>
                         <td className="mono" style={{ ...right, fontWeight: 600, color: MARINE }}>
                           {ckm ? (
@@ -323,7 +335,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
                       </tr>
                     );
                   })}
-                  {rows.length === 0 && <tr><td colSpan={11} style={{ color: TEXT_MUTED }}>Keine Daten im gewählten Zeitraum.</td></tr>}
+                  {rows.length === 0 && <tr><td colSpan={12} style={{ color: TEXT_MUTED }}>Keine Daten im gewählten Zeitraum.</td></tr>}
                   {rows.length > 1 && (
                     <tr style={{ borderTop: `2px solid ${BORDER}` }}>
                       <td style={{ fontWeight: 600 }}>Summe</td>
@@ -334,6 +346,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
                       <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(sum.neben)}</td>
                       <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(sum.maut)}</td>
                       <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(sum.teile)}</td>
+                      <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(sum.leasing)}</td>
                       <td className="mono" style={{ ...right, fontWeight: 700 }}>{euro(sum.kosten)}</td>
                       <td className="mono" style={{ ...right, fontWeight: 700, color: MARINE }}>{proKm(sum.kosten, sum.km) ? dez(proKm(sum.kosten, sum.km)) : "–"}</td>
                       <td className="mono" style={{ ...right, fontWeight: 700, color: sum.umsatz - sum.kosten >= 0 ? SUCCESS : DANGER }}>{euro(sum.umsatz - sum.kosten)}</td>
@@ -344,11 +357,11 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
             </div>
             <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginTop: 10, lineHeight: 1.5 }}>
               Alle Beträge netto. km aus dem Einsatzplan (Wochen anteilig nach Tagen, unplausible Wochen ausgelassen). Umsatz = Summe der Touren
-              (Fracht, FD, ADR, Multistop, Wartezeit, Maut, Diesel). Ersatzteile nach Belegdatum, Gutschriften verrechnet.
+              (Fracht, FD, ADR, Multistop, Wartezeit, Maut, Diesel). Ersatzteile nach Belegdatum, Gutschriften verrechnet. Leasing/Miete: Monatsrate, angeschnittene Monate anteilig nach Tagen.
               {(auswertung.lager !== 0 || auswertung.offen !== 0) && (
                 <> Nicht enthalten: Ersatzteile „Lager“ {euro(auswertung.lager)}{auswertung.offen !== 0 && <>, ohne Fahrzeug {euro(auswertung.offen)}</>}.</>
               )}
-              {" "}Nicht erfasst sind Fahrerlohn, Leasing/Miete, Versicherung, Steuer und Werkstattlohn.
+              {" "}Nicht erfasst sind Fahrerlohn, Versicherung, Steuer und Werkstattlohn.
             </div>
           </div>
 
@@ -360,7 +373,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
                   <thead>
                     <tr>
                       <th>Monat</th><th style={right}>km</th><th style={right}>Umsatz</th><th style={right}>Diesel + AdBlue</th><th style={right}>Tank-Nebenk.</th>
-                      <th style={right}>Maut</th><th style={right}>Ersatzteile</th><th style={right}>Kosten gesamt</th><th style={right}>Kosten/km</th>
+                      <th style={right}>Maut</th><th style={right}>Ersatzteile</th><th style={right}>Leasing/Miete</th><th style={right}>Kosten gesamt</th><th style={right}>Kosten/km</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -373,6 +386,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
                         <td className="mono" style={right}>{r.neben ? euro(r.neben) : "–"}</td>
                         <td className="mono" style={right}>{euro(r.maut)}</td>
                         <td className="mono" style={right}>{r.teile ? euro(r.teile) : "–"}</td>
+                        <td className="mono" style={right}>{r.leasing ? euro(r.leasing) : "–"}</td>
                         <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(r.kosten)}</td>
                         <td className="mono" style={{ ...right, fontWeight: 600, color: MARINE }}>{proKm(r.kosten, r.km) ? dez(proKm(r.kosten, r.km)) : "–"}</td>
                       </tr>
@@ -434,6 +448,7 @@ export default function Fuhrpark({ fleet, tours, wochenKm, umsatzVon, reiter, on
       {aktiv === "tanken" && <Tankvorgaenge fleet={fleet} wochenKm={wochenKm} startFilter={start(false)} onFilterChange={merke} />}
       {aktiv === "maut" && <Maut fleet={fleet} tours={tours} wochenKm={wochenKm} startFilter={start(false)} onFilterChange={merke} />}
       {aktiv === "ersatzteile" && <Ersatzteile fleet={fleet} startFilter={start(true)} onFilterChange={merke} />}
+      {aktiv === "leasing" && <Leasing />}
     </div>
   );
 }
