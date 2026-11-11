@@ -85,7 +85,7 @@ function Sektion({ art, kennzeichen, alle, jahr, onChange, setFehler }) {
     if (form.bis < form.von) { setFehler("„bis“ liegt vor „von“."); return; }
     setBusy(true);
     try {
-      await adb.addAbgabe({ ...form, art, betrag });
+      await adb.addAbgabe({ ...form, art, betrag, gesellschaft: form.gesellschaft.trim(), vertragNr: form.vertragNr.trim() });
       setForm(null);
       onChange();
     } catch (e) { setFehler(e.message); }
@@ -234,7 +234,7 @@ function Sektion({ art, kennzeichen, alle, jahr, onChange, setFehler }) {
                   {["gesellschaft", "vertragNr", "bemerkung"].map((feld) => (
                     <td key={feld}>
                       <input key={`${feld}-${x.id}-${x[feld]}`} defaultValue={x[feld]} style={{ minWidth: 130 }}
-                        onBlur={(e) => { if (e.target.value !== x[feld]) aendern(x, { [feld]: e.target.value }); }} />
+                        onBlur={(e) => { const v = e.target.value.trim(); if (v !== x[feld]) aendern(x, { [feld]: v }); }} />
                     </td>
                   ))}
                   <td><button className="ghost" onClick={() => loeschen(x)} style={{ padding: "4px 8px" }}><Trash2 size={13} /></button></td>
@@ -253,6 +253,7 @@ export default function Abgaben({ fleet }) {
   const [jahr, setJahr] = useState(new Date().getFullYear());
   const [alle, setAlle] = useState([]);
   const [extra, setExtra] = useState([]);
+  const [miete, setMiete] = useState([]); // Kennzeichen mit Art "Miete" - Versicherung/Steuer laufen über die Miete
   const [laden, setLaden] = useState(true);
   const [fehler, setFehler] = useState("");
 
@@ -261,7 +262,8 @@ export default function Abgaben({ fleet }) {
     try {
       const [a, lf] = await Promise.all([adb.fetchAbgaben(), ldb.fetchFahrzeuge().catch(() => [])]);
       setAlle(a);
-      setExtra(lf.map((f) => f.kennzeichen));
+      setExtra(lf.filter((f) => f.art !== "Miete").map((f) => f.kennzeichen));
+      setMiete(lf.filter((f) => f.art === "Miete").map((f) => f.kennzeichen));
     } catch (e) {
       setFehler("Versicherung & Steuer konnte nicht geladen werden: " + (e.message || e));
     }
@@ -269,12 +271,15 @@ export default function Abgaben({ fleet }) {
   }
   useEffect(() => { neuLaden(); }, []);
 
-  // Fuhrpark + Fahrzeuge aus Leasing/Miete (z. B. KO-OF 213) + alles, wofür schon Zahlungen da sind
+  // Fuhrpark + Leasing-/Eigentumsfahrzeuge + alles, wofür schon Zahlungen da sind.
+  // Miet-LKW (Art "Miete" unter Leasing/Miete) nicht - Versicherung und Steuer
+  // sind dort in der Miete enthalten; nur falls doch Zahlungen erfasst sind, bleiben sie sichtbar.
   const kennzeichen = useMemo(() => {
-    const fp = (fleet || []).map((f) => f.plate);
-    const rest = Array.from(new Set([...extra, ...alle.map((x) => x.kennzeichen)])).filter((k) => !fp.includes(k)).sort();
+    const mitZahlung = new Set(alle.map((x) => x.kennzeichen));
+    const fp = (fleet || []).map((f) => f.plate).filter((k) => !miete.includes(k) || mitZahlung.has(k));
+    const rest = Array.from(new Set([...extra, ...mitZahlung])).filter((k) => !fp.includes(k) && (!miete.includes(k) || mitZahlung.has(k))).sort();
     return [...fp, ...rest];
-  }, [fleet, extra, alle]);
+  }, [fleet, extra, miete, alle]);
   const jahre = useMemo(() => {
     const s = new Set(alle.flatMap((x) => [Number(x.von.slice(0, 4)), Number(x.bis.slice(0, 4))]));
     for (let j = 2026; j <= new Date().getFullYear() + 1; j++) s.add(j);
