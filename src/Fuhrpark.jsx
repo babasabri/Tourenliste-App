@@ -127,6 +127,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
   const [vertraege, setVertraege] = useState([]);
   const [abgaben, setAbgaben] = useState([]);
   const [fahrerKosten, setFahrerKosten] = useState([]);
+  const [rollen, setRollen] = useState({});
   const [laden, setLaden] = useState(true);
   const [fehler, setFehler] = useState("");
 
@@ -134,7 +135,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
     setLaden(true);
     setFehler("");
     try {
-      const [t, tr, m, e, lr, lf, ab, fk] = await Promise.all([tdb.fetchTankvorgaenge(), tdb.fetchTankpoolRechnungen(), mdb.fetchMautPositionen(), edb.fetchPositionen(), ldb.fetchRaten(), ldb.fetchFahrzeuge(), adb.fetchAbgaben(), fdb.fetchKosten()]);
+      const [t, tr, m, e, lr, lf, ab, fk, ro] = await Promise.all([tdb.fetchTankvorgaenge(), tdb.fetchTankpoolRechnungen(), mdb.fetchMautPositionen(), edb.fetchPositionen(), ldb.fetchRaten(), ldb.fetchFahrzeuge(), adb.fetchAbgaben(), fdb.fetchKosten(), fdb.fetchRollen()]);
       setTank(t);
       setTankRe(tr);
       setMaut(m.filter((x) => x.datum >= MAUT_START));
@@ -143,6 +144,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
       setVertraege(lf);
       setAbgaben(ab);
       setFahrerKosten(fk);
+      setRollen(ro);
     } catch (err) {
       setFehler("Daten konnten nicht geladen werden: " + (err.message || err));
     }
@@ -188,9 +190,10 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
     for (const [lkw, k] of Object.entries(km)) z(lkw).km += k;
     for (const [lkw, b] of Object.entries(ldb.leasingJeLkw(raten, start, ende))) z(lkw).leasing += b;
     for (const [lkw, b] of Object.entries(adb.abgabenJeLkw(abgaben, start, ende))) z(lkw).versSteuer += b.versicherung + b.steuer;
-    let fahrerOffen = 0;
-    for (const [lkw, b] of Object.entries(fdb.jeLkw(fahrerKosten, wochenKm, start, ende))) {
+    let fahrerOffen = 0, verwaltung = 0;
+    for (const [lkw, b] of Object.entries(fdb.jeLkw(fahrerKosten, wochenKm, start, ende, { touren: tours, rollen }))) {
       if (lkw === fdb.OFFEN) fahrerOffen += b;
+      else if (lkw === fdb.VERWALTUNG) verwaltung += b;
       else z(lkw).fahrer += b;
     }
     const reihenfolge = [...fleetPlates, ...Object.keys(zeilen).filter((p) => !fleetPlates.includes(p)).sort()];
@@ -201,8 +204,8 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
       for (const k of ["km", "umsatz", "touren", "diesel", "neben", "maut", "teile", "leasing", "versSteuer", "fahrer", "kosten"]) s[k] += r[k];
       return s;
     }, { km: 0, umsatz: 0, touren: 0, diesel: 0, neben: 0, maut: 0, teile: 0, leasing: 0, versSteuer: 0, fahrer: 0, kosten: 0 });
-    return { rows, sum, lager: f.lkw === "ALLE" ? lager : 0, offen: f.lkw === "ALLE" ? offen : 0, fahrerOffen: f.lkw === "ALLE" ? fahrerOffen : 0 };
-  }, [tank, maut, teile, raten, abgaben, fahrerKosten, tours, wochenKm, start, ende, f.lkw, fleetPlates]);
+    return { rows, sum, lager: f.lkw === "ALLE" ? lager : 0, offen: f.lkw === "ALLE" ? offen : 0, fahrerOffen: f.lkw === "ALLE" ? fahrerOffen : 0, verwaltung: f.lkw === "ALLE" ? verwaltung : 0 };
+  }, [tank, maut, teile, raten, abgaben, fahrerKosten, rollen, tours, wochenKm, start, ende, f.lkw, fleetPlates]);
 
   // Verlauf je Monat (Kosten nach Quelle), gleiche Kappung
   const proMonat = useMemo(() => {
@@ -218,8 +221,8 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
       const anteil = ldb.leasingJeLkw([r], start, ende)[r.kennzeichen];
       if (anteil) m(`${r.monat}-01`).leasing += anteil;
     }
-    for (const a of fdb.verteilen(fahrerKosten, wochenKm, start, ende)) {
-      if (a.lkw === fdb.OFFEN || !lkwOk(a.lkw) || !a.betrag) continue;
+    for (const a of fdb.verteilen(fahrerKosten, wochenKm, start, ende, { touren: tours, rollen })) {
+      if (a.lkw === fdb.OFFEN || a.lkw === fdb.VERWALTUNG || !lkwOk(a.lkw) || !a.betrag) continue;
       m(`${a.monat}-01`).fahrer += a.betrag;
     }
     // Versicherung/Steuer: je Kalendermonat tagesgenau verteilen
@@ -244,7 +247,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
       const r = map[k];
       return { monat: `${MONATE[mo - 1]} ${j}`, ...r, kosten: r.diesel + r.neben + r.maut + r.teile + r.leasing + r.versSteuer + r.fahrer, km };
     });
-  }, [tank, maut, teile, raten, abgaben, fahrerKosten, tours, wochenKm, start, ende, f.lkw]);
+  }, [tank, maut, teile, raten, abgaben, fahrerKosten, rollen, tours, wochenKm, start, ende, f.lkw]);
 
   const jahre = useMemo(() => {
     const s = new Set([...tank, ...maut].map((t) => (t.datum || "").slice(0, 4)).filter(Boolean));
@@ -404,7 +407,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
               {(auswertung.lager !== 0 || auswertung.offen !== 0) && (
                 <> Nicht enthalten: Ersatzteile „Lager“ {euro(auswertung.lager)}{auswertung.offen !== 0 && <>, ohne Fahrzeug {euro(auswertung.offen)}</>}.</>
               )}
-              {auswertung.fahrerOffen > 0.5 && <> Fahrerkosten ohne LKW-Zuordnung im Einsatzplan: {euro(auswertung.fahrerOffen)} (nicht enthalten).</>}{" "}Nicht erfasst ist Werkstattlohn.
+              {auswertung.fahrerOffen > 0.5 && <> Fahrerkosten ohne LKW-Zuordnung im Einsatzplan: {euro(auswertung.fahrerOffen)} (nicht enthalten).</>}{auswertung.verwaltung > 0.5 && <> Personalkosten Verwaltung/Büro (nicht gefahrene Tage von GF, Fuhrparkleiter, Büro): {euro(auswertung.verwaltung)} (nicht enthalten).</>}{" "}Nicht erfasst ist Werkstattlohn.
               {schlussraten.length > 0 && (
                 <div style={{ marginTop: 6, color: TEXT }}>
                   <b>Schlussraten im Zeitraum (nicht in den Kosten oben enthalten):</b>{" "}
@@ -502,7 +505,7 @@ export default function Fuhrpark({ fleet, drivers, tours, wochenKm, umsatzVon, r
       {aktiv === "ersatzteile" && <Ersatzteile fleet={fleet} startFilter={start(true)} onFilterChange={merke} />}
       {aktiv === "leasing" && <Leasing />}
       {aktiv === "abgaben" && <Abgaben fleet={fleet} />}
-      {aktiv === "fahrer" && <FahrerKosten drivers={drivers} fleet={fleet} einsatz={wochenKm} />}
+      {aktiv === "fahrer" && <FahrerKosten drivers={drivers} fleet={fleet} einsatz={wochenKm} tours={tours} />}
     </div>
   );
 }

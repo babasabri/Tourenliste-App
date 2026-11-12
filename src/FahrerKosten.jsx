@@ -36,7 +36,7 @@ function parseBetrag(s) {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : NaN;
 }
 
-export default function FahrerKosten({ drivers, fleet, einsatz }) {
+export default function FahrerKosten({ drivers, fleet, einsatz, tours }) {
   const heute = new Date();
   const [jahr, setJahr] = useState(heute.getFullYear());
   const [kosten, setKosten] = useState([]);
@@ -44,10 +44,11 @@ export default function FahrerKosten({ drivers, fleet, einsatz }) {
   const [fehler, setFehler] = useState("");
   const [entwurf, setEntwurf] = useState({});
   const [status, setStatus] = useState({});
+  const [rollen, setRollen] = useState({});
 
   async function neuLaden() {
     setFehler("");
-    try { setKosten(await fdb.fetchKosten()); } catch (e) { setFehler("Fahrerkosten konnten nicht geladen werden: " + (e.message || e)); }
+    try { const [k, r] = await Promise.all([fdb.fetchKosten(), fdb.fetchRollen()]); setKosten(k); setRollen(r); } catch (e) { setFehler("Fahrerkosten konnten nicht geladen werden: " + (e.message || e)); }
     setLaden(false);
   }
   useEffect(() => { neuLaden(); }, []);
@@ -55,12 +56,24 @@ export default function FahrerKosten({ drivers, fleet, einsatz }) {
   const monate = MON.map((_, i) => `${jahr}-${pad2(i + 1)}`);
   const map = useMemo(() => Object.fromEntries(kosten.map((k) => [`${k.fahrer}|${k.monat}`, k.betrag])), [kosten]);
 
-  // Zeilen: Fahrer aus den Stammdaten + alle, für die es schon Kosten gibt;
+  // Zeilen: Fahrer aus den Stammdaten + alle, die im Jahr im Einsatzplan oder in
+  // Touren vorkommen (z. B. ausgeschiedene Fahrer) + alle mit erfassten Kosten;
   // "Ersatzfahrer" ans Ende
   const fahrer = useMemo(() => {
-    const s = new Set([...(drivers || []).map((d) => d.name || d).filter(Boolean), ...kosten.map((k) => k.fahrer)]);
+    const s = new Set([
+      ...(drivers || []).map((d) => d.name || d),
+      ...(einsatz || []).filter((e) => e.jahr === jahr).map((e) => e.fahrer),
+      ...(tours || []).filter((t) => (t.datum || "").startsWith(`${jahr}-`)).map((t) => t.fahrer),
+      ...kosten.filter((k) => k.monat.startsWith(`${jahr}-`)).map((k) => k.fahrer),
+    ].map((x) => (x || "").trim()).filter(Boolean));
     return Array.from(s).sort((a, b) => (a === "Ersatzfahrer") - (b === "Ersatzfahrer") || a.localeCompare(b, "de"));
-  }, [drivers, kosten]);
+  }, [drivers, einsatz, tours, kosten, jahr]);
+  const ftage = useMemo(() => fdb.fahrtage(tours), [tours]);
+
+  async function rolleAendern(f, patch) {
+    const neu = { rolle: rollen[f]?.rolle || "fahrer", funktion: rollen[f]?.funktion || "", ...patch };
+    try { await fdb.setRolle(f, neu); setRollen((r) => ({ ...r, [f]: neu })); } catch (e) { setFehler("Speichern fehlgeschlagen: " + (e.message || e)); }
+  }
 
   const jahre = useMemo(() => {
     const s = new Set(kosten.map((k) => Number(k.monat.slice(0, 4))));
@@ -69,7 +82,7 @@ export default function FahrerKosten({ drivers, fleet, einsatz }) {
   }, [kosten]);
 
   // Einsatz-Wochen je Fahrer und Monat (Hinweis in der Zelle)
-  const verteilung = useMemo(() => fdb.verteilen(kosten.filter((k) => k.monat.startsWith(`${jahr}-`)), einsatz, null, null), [kosten, einsatz, jahr]);
+  const verteilung = useMemo(() => fdb.verteilen(kosten.filter((k) => k.monat.startsWith(`${jahr}-`)), einsatz, null, null, { touren: tours, rollen }), [kosten, einsatz, tours, rollen, jahr]);
 
   async function speichern(f, monat) {
     const key = `${f}|${monat}`;
@@ -115,7 +128,7 @@ export default function FahrerKosten({ drivers, fleet, einsatz }) {
   const fleetPlates = (fleet || []).map((f) => f.plate);
   const lkwZeilen = useMemo(() => {
     const keys = Array.from(new Set(verteilung.map((v) => v.lkw)));
-    const ordnung = [...fleetPlates, ...keys.filter((k) => k !== fdb.OFFEN && !fleetPlates.includes(k)).sort(), fdb.OFFEN];
+    const ordnung = [...fleetPlates, ...keys.filter((k) => k !== fdb.OFFEN && k !== fdb.VERWALTUNG && !fleetPlates.includes(k)).sort(), fdb.VERWALTUNG, fdb.OFFEN];
     return ordnung.filter((k) => keys.includes(k)).map((k) => {
       const proMonat = Object.fromEntries(monate.map((m) => [m, verteilung.filter((v) => v.lkw === k && v.monat === m).reduce((s, v) => s + v.betrag, 0)]));
       return { lkw: k, proMonat, summe: Object.values(proMonat).reduce((s, v) => s + v, 0) };
@@ -178,7 +191,16 @@ export default function FahrerKosten({ drivers, fleet, einsatz }) {
             <tbody>
               {fahrer.map((f) => (
                 <tr key={f}>
-                  <td style={{ position: "sticky", left: 0, background: CARD, zIndex: 1, fontWeight: 600, whiteSpace: "nowrap" }}>{f}</td>
+                  <td style={{ position: "sticky", left: 0, background: CARD, zIndex: 1, whiteSpace: "nowrap" }}>
+                    <div style={{ fontWeight: 600 }}>{f}</div>
+                    <select value={rollen[f]?.rolle || "fahrer"} onChange={(e) => rolleAendern(f, { rolle: e.target.value })}
+                      title="Fahrer: Monatskosten komplett auf die LKW (über den Einsatzplan). Anteilig: nur Fahrtage aus den Touren, Rest = Verwaltung/Büro."
+                      style={{ width: 150, padding: "2px 4px", fontSize: 11, marginTop: 3 }}>
+                      <option value="fahrer">Fahrer (voll auf LKW)</option>
+                      <option value="anteilig">anteilig nach Fahrtagen</option>
+                    </select>
+                    {rollen[f]?.funktion && <div style={{ fontSize: 10.5, color: TEXT_MUTED, marginTop: 2 }}>{rollen[f].funktion}</div>}
+                  </td>
                   {monate.map((m) => {
                     const key = `${f}|${m}`;
                     const wert = map[key];
@@ -206,10 +228,11 @@ export default function FahrerKosten({ drivers, fleet, einsatz }) {
       </div>
 
       <div style={card}>
-        <div style={h2}>Verteilung auf die LKW {jahr} (über den Einsatzplan)</div>
+        <div style={h2}>Verteilung auf die LKW {jahr}</div>
         <div style={{ fontSize: 12, color: TEXT_MUTED, marginBottom: 12 }}>
-          Jeder Tag zählt für den LKW, auf dem der Fahrer in dieser Kalenderwoche im Einsatzplan eingeteilt war – auch bei Urlaub oder Krankheit.
-          Ist er in einer Woche gar nicht eingeteilt, landet der Betrag unter „nicht zugeordnet“. Diese Werte fließen in die Fuhrpark-Übersicht.
+          <b>Fahrer (voll auf LKW):</b> jeder Tag zählt für den LKW, auf dem der Fahrer in dieser Kalenderwoche im Einsatzplan eingeteilt war – auch bei Urlaub oder Krankheit;
+          ohne Einteilung landet der Betrag unter „nicht zugeordnet“. <b>Anteilig nach Fahrtagen:</b> jeder Tag mit Tour geht auf den gefahrenen LKW, der Rest des Gehalts
+          unter „Verwaltung/Büro“. Die LKW-Zeilen fließen in die Fuhrpark-Übersicht.
         </div>
         {lkwZeilen.length === 0 ? (
           <div style={{ color: TEXT_MUTED, fontSize: 13 }}>Für {jahr} sind noch keine Fahrerkosten erfasst.</div>
@@ -222,16 +245,49 @@ export default function FahrerKosten({ drivers, fleet, einsatz }) {
               <tbody>
                 {lkwZeilen.map((z) => {
                   const off = z.lkw === fdb.OFFEN;
+                  const verw = z.lkw === fdb.VERWALTUNG;
                   return (
-                    <tr key={z.lkw} style={off ? { background: WARN_BG } : undefined}>
-                      <td className="mono" style={{ fontWeight: 600, whiteSpace: "nowrap", color: off ? AMBER_DARK : undefined }}>{off ? "nicht zugeordnet" : z.lkw}</td>
+                    <tr key={z.lkw} style={off ? { background: WARN_BG } : verw ? { background: "#F4F6F8", borderTop: `2px solid ${BORDER}` } : undefined}>
+                      <td className="mono" style={{ fontWeight: 600, whiteSpace: "nowrap", color: off ? AMBER_DARK : verw ? TEXT_MUTED : undefined }}>
+                        {off ? "nicht zugeordnet" : verw ? "Verwaltung/Büro" : z.lkw}
+                        {verw && <div style={{ fontSize: 10.5, fontWeight: 400 }}>nicht in den LKW-Kosten</div>}
+                      </td>
                       {monate.map((m) => <td key={m} className="mono" style={{ ...right, fontSize: 12 }}>{z.proMonat[m] ? euro(z.proMonat[m]) : "–"}</td>)}
-                      <td className="mono" style={{ ...right, fontWeight: 600, color: off ? AMBER_DARK : MARINE }}>{euro(z.summe)}</td>
+                      <td className="mono" style={{ ...right, fontWeight: 600, color: off ? AMBER_DARK : verw ? TEXT_MUTED : MARINE }}>{euro(z.summe)}</td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+        {fahrer.some((f) => rollen[f]?.rolle === "anteilig") && (
+          <div style={{ marginTop: 18 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: TEXT, marginBottom: 6 }}>Fahranteil (Personen mit anderer Hauptaufgabe)</div>
+            <div style={{ fontSize: 12, color: TEXT_MUTED, marginBottom: 8 }}>
+              Fahrtage = Tage mit mindestens einer Tour in der Tourenliste. Anteil = Fahrtage ÷ Arbeitstage (Mo–Fr) des Monats, höchstens 100 %.
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table>
+                <thead><tr><th>Person</th>{MON.map((m) => <th key={m} style={right}>{m}</th>)}</tr></thead>
+                <tbody>
+                  {fahrer.filter((f) => rollen[f]?.rolle === "anteilig").map((f) => (
+                    <tr key={f}>
+                      <td style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{f}{rollen[f]?.funktion && <span style={{ fontWeight: 400, color: TEXT_MUTED, fontSize: 11 }}> · {rollen[f].funktion}</span>}</td>
+                      {monate.map((m, i) => {
+                        const n = ftage[`${f}|${m}`] || 0;
+                        const at = fdb.arbeitstage(jahr, i + 1);
+                        return (
+                          <td key={m} className="mono" style={{ ...right, fontSize: 11.5, whiteSpace: "nowrap", color: n ? TEXT : TEXT_MUTED }}>
+                            {n ? <>{n}/{at}<div style={{ fontSize: 10.5, color: TEXT_MUTED }}>{Math.min(100, Math.round((n / at) * 100))} %</div></> : "–"}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
         {offen && offen.summe > 0.5 && (
