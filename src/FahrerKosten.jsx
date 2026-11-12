@@ -54,7 +54,10 @@ export default function FahrerKosten({ drivers, fleet, einsatz, tours }) {
   useEffect(() => { neuLaden(); }, []);
 
   const monate = MON.map((_, i) => `${jahr}-${pad2(i + 1)}`);
-  const map = useMemo(() => Object.fromEntries(kosten.map((k) => [`${k.fahrer}|${k.monat}`, k.betrag])), [kosten]);
+  // eingetragene Werte + bei Tagessatz-Personen die aus den Touren berechneten Monatswerte
+  const eff = useMemo(() => fdb.effektiveKosten(kosten, rollen, tours), [kosten, rollen, tours]);
+  const map = useMemo(() => Object.fromEntries(eff.map((k) => [`${k.fahrer}|${k.monat}`, k.betrag])), [eff]);
+  const istTs = (f) => rollen[f]?.rolle === "tagessatz";
 
   // Zeilen: Fahrer aus den Stammdaten + alle, die im Jahr im Einsatzplan oder in
   // Touren vorkommen (z. B. ausgeschiedene Fahrer) + alle mit erfassten Kosten;
@@ -71,7 +74,7 @@ export default function FahrerKosten({ drivers, fleet, einsatz, tours }) {
   const ftage = useMemo(() => fdb.fahrtage(tours), [tours]);
 
   async function rolleAendern(f, patch) {
-    const neu = { rolle: rollen[f]?.rolle || "fahrer", funktion: rollen[f]?.funktion || "", ...patch };
+    const neu = { rolle: rollen[f]?.rolle || "fahrer", funktion: rollen[f]?.funktion || "", tagessatz: rollen[f]?.tagessatz ?? null, ...patch };
     try { await fdb.setRolle(f, neu); setRollen((r) => ({ ...r, [f]: neu })); } catch (e) { setFehler("Speichern fehlgeschlagen: " + (e.message || e)); }
   }
 
@@ -111,7 +114,7 @@ export default function FahrerKosten({ drivers, fleet, einsatz, tours }) {
     const monat = monate[i];
     const vor = i === 0 ? `${jahr - 1}-12` : monate[i - 1];
     const rows = fahrer
-      .filter((f) => map[`${f}|${monat}`] === undefined && map[`${f}|${vor}`] !== undefined)
+      .filter((f) => !istTs(f) && map[`${f}|${monat}`] === undefined && map[`${f}|${vor}`] !== undefined)
       .map((f) => ({ fahrer: f, monat, betrag: map[`${f}|${vor}`] }));
     if (!rows.length) return;
     try {
@@ -169,7 +172,7 @@ export default function FahrerKosten({ drivers, fleet, einsatz, tours }) {
           </div>
         </div>
         <div style={{ fontSize: 12, color: TEXT_MUTED, marginBottom: 12 }}>
-          Je Fahrer die <b>Arbeitgeber-Gesamtkosten</b> des Monats eintragen (Bruttolohn + Arbeitgeberanteile Sozialversicherung + Spesen, z. B. <span className="mono">3.850,00</span>).
+          Bei <b>Tagessatz</b> rechnet die App selbst (Einsatztage aus den Touren × Tagessatz, blau hinterlegt). Für alle anderen die <b>Arbeitgeber-Gesamtkosten</b> des Monats eintragen (Bruttolohn + Arbeitgeberanteile Sozialversicherung + Spesen, z. B. <span className="mono">3.850,00</span>).
           Gespeichert wird beim Verlassen der Zelle, leere Zelle löscht. „wie Vormonat“ füllt leere Zellen mit dem Vormonatswert.
         </div>
         <div style={{ overflowX: "auto" }}>
@@ -194,16 +197,39 @@ export default function FahrerKosten({ drivers, fleet, einsatz, tours }) {
                   <td style={{ position: "sticky", left: 0, background: CARD, zIndex: 1, whiteSpace: "nowrap" }}>
                     <div style={{ fontWeight: 600 }}>{f}</div>
                     <select value={rollen[f]?.rolle || "fahrer"} onChange={(e) => rolleAendern(f, { rolle: e.target.value })}
-                      title="Fahrer: Monatskosten komplett auf die LKW (über den Einsatzplan). Anteilig: nur Fahrtage aus den Touren, Rest = Verwaltung/Büro."
+                      title="Fahrer: Monatskosten komplett auf die LKW (über den Einsatzplan). Anteilig: nur Fahrtage aus den Touren, Rest = Verwaltung/Büro. Tagessatz: Einsatztage aus den Touren x Tagessatz, wird automatisch gerechnet."
                       style={{ width: 150, padding: "2px 4px", fontSize: 11, marginTop: 3 }}>
                       <option value="fahrer">Fahrer (voll auf LKW)</option>
                       <option value="anteilig">anteilig nach Fahrtagen</option>
+                      <option value="tagessatz">Tagessatz je Einsatztag</option>
                     </select>
+                    {istTs(f) && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 3, fontSize: 11, color: TEXT_MUTED }}>
+                        <input className="mono" inputMode="decimal" key={`ts-${f}-${rollen[f]?.tagessatz}`} defaultValue={fmt(rollen[f]?.tagessatz)} placeholder="0,00"
+                          onBlur={(e) => {
+                            const v = parseBetrag(e.target.value);
+                            if (Number.isNaN(v)) { setFehler(`Tagessatz ${f}: „${e.target.value}“ ist kein Betrag`); return; }
+                            if (v !== (rollen[f]?.tagessatz ?? null)) rolleAendern(f, { tagessatz: v });
+                          }}
+                          style={{ width: 70, padding: "2px 5px", fontSize: 11, textAlign: "right" }} /> € je Einsatztag
+                      </div>
+                    )}
                     {rollen[f]?.funktion && <div style={{ fontSize: 10.5, color: TEXT_MUTED, marginTop: 2 }}>{rollen[f].funktion}</div>}
                   </td>
                   {monate.map((m) => {
                     const key = `${f}|${m}`;
                     const wert = map[key];
+                    if (istTs(f)) {
+                      const n = ftage[key] || 0;
+                      return (
+                        <td key={m} style={{ padding: "6px 4px" }} title="Automatisch: Einsatztage aus den Touren x Tagessatz">
+                          <div className="mono" style={{ width: 88, textAlign: "right", fontSize: 12.5, padding: "3px 6px", background: "#F1F6FB", borderRadius: 6, color: n ? MARINE : TEXT_MUTED }}>
+                            {n && rollen[f]?.tagessatz ? fmt(wert) : "–"}
+                            {n > 0 && <div style={{ fontSize: 10, color: TEXT_MUTED }}>{n} × {fmt(rollen[f]?.tagessatz)}</div>}
+                          </div>
+                        </td>
+                      );
+                    }
                     return (
                       <td key={m} style={{ padding: "6px 4px" }}>
                         <input className="mono" inputMode="decimal" value={key in entwurf ? entwurf[key] : fmt(wert)} placeholder="–"
@@ -232,7 +258,7 @@ export default function FahrerKosten({ drivers, fleet, einsatz, tours }) {
         <div style={{ fontSize: 12, color: TEXT_MUTED, marginBottom: 12 }}>
           <b>Fahrer (voll auf LKW):</b> jeder Tag zählt für den LKW, auf dem der Fahrer in dieser Kalenderwoche im Einsatzplan eingeteilt war – auch bei Urlaub oder Krankheit;
           ohne Einteilung landet der Betrag unter „nicht zugeordnet“. <b>Anteilig nach Fahrtagen:</b> jeder Tag mit Tour geht auf den gefahrenen LKW, der Rest des Gehalts
-          unter „Verwaltung/Büro“. Die LKW-Zeilen fließen in die Fuhrpark-Übersicht.
+          unter „Verwaltung/Büro“. <b>Tagessatz:</b> jeder Einsatztag geht mit dem Tagessatz auf den gefahrenen LKW. Die LKW-Zeilen fließen in die Fuhrpark-Übersicht.
         </div>
         {lkwZeilen.length === 0 ? (
           <div style={{ color: TEXT_MUTED, fontSize: 13 }}>Für {jahr} sind noch keine Fahrerkosten erfasst.</div>

@@ -37,10 +37,12 @@ export async function setKostenBulk(rows) {
 export async function fetchRollen() {
   const { data, error } = await supabase.from("fahrer_rolle").select("*");
   if (error) throw error;
-  return Object.fromEntries(data.map((r) => [r.fahrer, { rolle: r.rolle, funktion: r.funktion || "" }]));
+  return Object.fromEntries(data.map((r) => [r.fahrer, { rolle: r.rolle, funktion: r.funktion || "", tagessatz: r.tagessatz === null ? null : Number(r.tagessatz) }]));
 }
-export async function setRolle(fahrer, { rolle, funktion }) {
-  const { error } = await supabase.from("fahrer_rolle").upsert({ fahrer, rolle, funktion: funktion || null }, { onConflict: "fahrer" });
+export async function setRolle(fahrer, { rolle, funktion, tagessatz }) {
+  const { error } = await supabase
+    .from("fahrer_rolle")
+    .upsert({ fahrer, rolle, funktion: funktion || null, tagessatz: tagessatz ?? null }, { onConflict: "fahrer" });
   if (error) throw error;
 }
 
@@ -97,17 +99,27 @@ function einsatzIndex(einsatz) {
 //  - Rolle "anteilig": jeder Fahrtag (Tag mit Tour, aus den Touren) = betrag / Arbeitstage
 //    (Mo-Fr) für den gefahrenen LKW; der Rest der Arbeitstage -> VERWALTUNG.
 // start/ende (ISO, optional) schneiden den Monat an.
-export function verteilen(kosten, einsatz, start, ende, opt = {}) {
+export function verteilen(kostenRoh, einsatz, start, ende, opt = {}) {
   const idx = einsatzIndex(einsatz);
   const tIdx = tourIndex(opt.touren);
   const rollen = opt.rollen || {};
+  const kosten = effektiveKosten(kostenRoh, rollen, opt.touren);
   const out = [];
   for (const k of kosten) {
     const [j, m] = k.monat.split("-").map(Number);
     const tage = new Date(j, m, 0).getDate();
     const anteil = {};
     const add = (l, b) => { anteil[l] = (anteil[l] || 0) + b; };
-    if (rollen[k.fahrer]?.rolle === "anteilig") {
+    if (rollen[k.fahrer]?.rolle === "tagessatz") {
+      // jeder Einsatztag (Tag mit Tour) = Tagessatz, auf den gefahrenen LKW
+      const satz = rollen[k.fahrer].tagessatz || 0;
+      for (let t = 1; t <= tage; t++) {
+        const s = `${k.monat}-${String(t).padStart(2, "0")}`;
+        if ((start && s < start) || (ende && s > ende)) continue;
+        const lkws = tIdx[`${k.fahrer}|${s}`];
+        if (lkws && lkws.length) for (const l of lkws) add(l, satz / lkws.length);
+      }
+    } else if (rollen[k.fahrer]?.rolle === "anteilig") {
       // erst den ganzen Monat bewerten, dann auf den Zeitraum schneiden - so ergibt
       // der volle Monat immer exakt den Monatsbetrag (auch bei Wochenendfahrten)
       const at = arbeitstage(j, m);
@@ -148,6 +160,20 @@ export function verteilen(kosten, einsatz, start, ende, opt = {}) {
     for (const [lkw, betrag] of Object.entries(anteil)) out.push({ fahrer: k.fahrer, monat: k.monat, lkw, betrag });
   }
   return out;
+}
+
+// Für Personen mit Tagessatz werden die Monatskosten nicht eingetragen, sondern
+// aus den Touren berechnet: Einsatztage (Tage mit Tour) x Tagessatz.
+// Liefert die Kostenliste mit diesen berechneten Zeilen (auto: true, tage: n).
+export function effektiveKosten(kosten, rollen, touren) {
+  const ts = Object.entries(rollen || {}).filter(([, r]) => r.rolle === "tagessatz" && r.tagessatz).map(([f]) => f);
+  if (!ts.length) return kosten;
+  const ft = fahrtage(touren);
+  const auto = Object.entries(ft)
+    .map(([key, n]) => { const [f, monat] = key.split("|"); return { f, monat, n }; })
+    .filter((x) => ts.includes(x.f))
+    .map((x) => ({ fahrer: x.f, monat: x.monat, betrag: x.n * rollen[x.f].tagessatz, bemerkung: "", auto: true, tage: x.n }));
+  return [...kosten.filter((k) => !ts.includes(k.fahrer)), ...auto];
 }
 
 // Fahrtage je Person und Monat (aus den Touren) -> { "fahrer|YYYY-MM": n }
