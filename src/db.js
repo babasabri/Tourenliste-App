@@ -156,6 +156,8 @@ const fleetToDb = (f) => ({
   start_km_datum: emptyToNull(f.startKmDatum),
   note: f.note || "",
   start_km_history: f.startKmHistory || [],
+  einsatz_von: emptyToNull(f.einsatzVon),
+  einsatz_bis: emptyToNull(f.einsatzBis),
 });
 
 const fleetFromDb = (r) => ({
@@ -165,6 +167,10 @@ const fleetFromDb = (r) => ({
   startKmDatum: nullToEmpty(r.start_km_datum),
   note: nullToEmpty(r.note),
   startKmHistory: r.start_km_history || [],
+  // Einsatzzeitraum (optional): steuert, in welchen Wochen/an welchen Tagen der LKW
+  // in Einsatzplan, Wochen-Kontrolle und Neue Tour erscheint (z. B. Miet-LKW)
+  einsatzVon: nullToEmpty(r.einsatz_von),
+  einsatzBis: nullToEmpty(r.einsatz_bis),
 });
 
 export async function fetchFleet() {

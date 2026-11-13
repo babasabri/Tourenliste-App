@@ -849,11 +849,14 @@ export default function TourenApp() {
   async function saveEinsatzWeek() {
     setEpSaving(true);
     setStorageError("");
-    const rows = fleet.map((f) => {
+    // nur LKW, die in dieser Woche im Einsatz sind (wie in der Tabelle angezeigt);
+    // vorhandene Einträge anderer LKW derselben Woche bleiben unverändert erhalten
+    const wochenFleet = fleetImZeitraum(wocheVon(epJahr, epKw), wocheBis(epJahr, epKw));
+    const rows = wochenFleet.map((f) => {
       const draft = epDraft[f.plate] || {};
       return { jahr: epJahr, kw: epKw, lkw: f.plate, fahrer: draft.fahrer || "", status: draft.status || "Aktiv", endKm: draft.endKm };
     });
-    const otherWeeks = einsatz.filter((e) => !(e.jahr === epJahr && e.kw === epKw));
+    const otherWeeks = einsatz.filter((e) => !(e.jahr === epJahr && e.kw === epKw && wochenFleet.some((f) => f.plate === e.lkw)));
     try {
       setEinsatz(await db.syncEinsatzplan([...otherWeeks, ...rows]));
       setEpDirty(false);
@@ -1744,6 +1747,14 @@ export default function TourenApp() {
     if (aktuell && !namen.includes(aktuell)) namen.push(aktuell);
     return namen.sort((x, y) => x.localeCompare(y));
   }
+  // LKW, die im Zeitraum [von, bis] im Einsatz waren (Einsatz von/bis aus den
+  // Stammdaten; ohne Datum = immer). Der aktuell gewählte Wert bleibt immer wählbar.
+  function fleetImZeitraum(von, bis, aktuell) {
+    const v = von || toLocalISODate(new Date()), b = bis || v;
+    return fleet.filter((f) => f.plate === aktuell || ((!f.einsatzVon || f.einsatzVon <= b) && (!f.einsatzBis || f.einsatzBis >= v)));
+  }
+  const wocheVon = (j, k) => toLocalISODate(isoWeekMonday(j, k));
+  const wocheBis = (j, k) => toLocalISODate(new Date(isoWeekMonday(j, k).getTime() + 6 * 86400000));
   async function fahrerDatumAendern(d, patch) {
     setStorageError("");
     try {
@@ -1789,7 +1800,7 @@ export default function TourenApp() {
     const weekTours = tours.filter(
       (t) => t.datum && isoWeekYear(t.datum) === epJahr && isoWeek(t.datum) === epKw
     );
-    return fleet.map((f) => {
+    return fleetImZeitraum(wocheVon(epJahr, epKw), wocheBis(epJahr, epKw)).map((f) => {
       const rec = getEinsatz(epJahr, epKw, f.plate);
       const status = rec ? rec.status : "Aktiv";
       const fahrer = (rec && rec.fahrer) || f.driver || "";
@@ -2149,7 +2160,7 @@ export default function TourenApp() {
             <select value={form.lkw} style={fbFieldStyle("lkw", fbInfo, formErrors)}
               onChange={(e) => { handlePlateChange(e.target.value, setForm, form); setFormErrors(formErrors.filter((k) => k !== "lkw")); clearFbFlag("lkw"); }}>
               <option value="">Auswählen …</option>
-              {fleet.map((f) => <option key={f.plate} value={f.plate}>{f.plate}</option>)}
+              {fleetImZeitraum(form.datum, form.datum, form.lkw).map((f) => <option key={f.plate} value={f.plate}>{f.plate}</option>)}
             </select>
           </div>
           <div>
@@ -3338,7 +3349,7 @@ export default function TourenApp() {
                     </tr>
                   </thead>
                   <tbody>
-                    {fleet.map((f) => {
+                    {fleetImZeitraum(wocheVon(epJahr, epKw), wocheBis(epJahr, epKw)).map((f) => {
                       const draft = epDraft[f.plate] || { fahrer: "", status: "Aktiv", endKm: "" };
                       const inactiveRow = draft.status !== "Aktiv";
                       const startKm = computeStartKm(epJahr, epKw, f.plate);
@@ -3718,10 +3729,26 @@ export default function TourenApp() {
                         </span>
                       )}
                       <span style={{ fontSize: 13, flex: 1 }}>{f.driver}</span>
+                      {f.einsatzBis && f.einsatzBis < toLocalISODate(new Date()) && (
+                        <span style={{ background: "#EDEFF2", color: TEXT_MUTED, fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 20 }}>nicht mehr im Einsatz</span>
+                      )}
                       <button className="ghost" style={{ padding: "4px 8px" }}
                         onClick={() => setConfirmDeleteFleet(confirming ? null : f.plate)}>
                         <Trash2 size={13} />
                       </button>
+                    </div>
+                    <div style={{ marginTop: 6, marginLeft: 118, display: "flex", gap: 10, flexWrap: "wrap", fontSize: 10.5, color: TEXT_MUTED }}
+                      title="In welchem Zeitraum der LKW in Einsatzplan, Wochen-Kontrolle und Neue Tour erscheint (leer = immer). Miet-LKW nach Rückgabe nicht löschen, sondern 'bis' eintragen.">
+                      <label style={{ margin: 0, display: "flex", alignItems: "center", gap: 4, fontSize: 10.5, color: TEXT_MUTED }}>
+                        im Einsatz von
+                        <input type="date" value={f.einsatzVon || ""} style={{ width: 128, padding: "2px 5px", fontSize: 11.5 }}
+                          onChange={(e) => persistFleet(fleet.map((x) => (x.plate === f.plate ? { ...x, einsatzVon: e.target.value } : x)))} />
+                      </label>
+                      <label style={{ margin: 0, display: "flex", alignItems: "center", gap: 4, fontSize: 10.5, color: TEXT_MUTED }}>
+                        bis
+                        <input type="date" value={f.einsatzBis || ""} style={{ width: 128, padding: "2px 5px", fontSize: 11.5 }}
+                          onChange={(e) => persistFleet(fleet.map((x) => (x.plate === f.plate ? { ...x, einsatzBis: e.target.value } : x)))} />
+                      </label>
                     </div>
                     <div style={{ marginTop: 6, marginLeft: 118 }}>
                       {editingStartKm !== f.plate && (
@@ -3963,7 +3990,7 @@ export default function TourenApp() {
                 <select value={editForm.lkw} style={fieldStyle("lkw", editErrors)}
                   onChange={(e) => { handlePlateChange(e.target.value, setEditForm, editForm, false); setEditErrors(editErrors.filter((k) => k !== "lkw")); }}>
                   <option value="">Auswählen …</option>
-                  {fleet.map((f) => <option key={f.plate} value={f.plate}>{f.plate}</option>)}
+                  {fleetImZeitraum(editForm.datum, editForm.datum, editForm.lkw).map((f) => <option key={f.plate} value={f.plate}>{f.plate}</option>)}
                 </select>
               </div>
               <div><label>Fahrer *</label>
