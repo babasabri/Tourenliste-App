@@ -1736,6 +1736,23 @@ export default function TourenApp() {
   const driverOptions = useMemo(() => {
     return drivers.map((d) => d.name).sort((a, b) => a.localeCompare(b));
   }, [drivers]);
+  // Fahrer, die im Zeitraum [von, bis] beschäftigt waren (Eintritt/Austritt aus den
+  // Stammdaten; ohne Datum = immer). Der aktuell gewählte Wert bleibt immer wählbar.
+  function fahrerOptionenFuer(von, bis, aktuell) {
+    const v = von || toLocalISODate(new Date()), b = bis || v;
+    const namen = drivers.filter((d) => (!d.eintritt || d.eintritt <= b) && (!d.austritt || d.austritt >= v)).map((d) => d.name);
+    if (aktuell && !namen.includes(aktuell)) namen.push(aktuell);
+    return namen.sort((x, y) => x.localeCompare(y));
+  }
+  async function fahrerDatumAendern(d, patch) {
+    setStorageError("");
+    try {
+      await db.updateDriver(d.id, patch);
+      setDrivers((ds) => ds.map((x) => (x.id === d.id ? { ...x, ...patch } : x)));
+    } catch (e) {
+      setStorageError("Speichern fehlgeschlagen: " + (e.message || e));
+    }
+  }
 
   // Einsatzplan frühere Wochen: alle Wochen, für die schon mindestens ein
   // Eintrag existiert (für den Schnellsprung-Dropdown), sowie eine flache
@@ -2140,7 +2157,7 @@ export default function TourenApp() {
             <select value={form.fahrer} style={fbFieldStyle("fahrer", fbInfo, formErrors)}
               onChange={(e) => { setForm({ ...form, fahrer: e.target.value }); setFormErrors(formErrors.filter((k) => k !== "fahrer")); clearFbFlag("fahrer"); }}>
               <option value="">Bitte wählen …</option>
-              {driverOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+              {fahrerOptionenFuer(form.datum, form.datum, form.fahrer).map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
           </div>
           <div>
@@ -3336,7 +3353,7 @@ export default function TourenApp() {
                               onChange={(e) => setEpDraftField(f.plate, "fahrer", e.target.value)}
                             >
                               <option value="">{f.driver ? `Standard: ${f.driver}` : "– auswählen –"}</option>
-                              {driverOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+                              {fahrerOptionenFuer(toLocalISODate(isoWeekMonday(epJahr, epKw)), toLocalISODate(new Date(isoWeekMonday(epJahr, epKw).getTime() + 6 * 86400000)), draft.fahrer).map((name) => <option key={name} value={name}>{name}</option>)}
                             </select>
                           </td>
                           <td>
@@ -3827,8 +3844,21 @@ export default function TourenApp() {
                 const confirming = confirmDeleteDriver === d.id;
                 return (
                   <div key={d.id} style={{ padding: "6px 0", borderBottom: `1px solid ${BORDER}` }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontSize: 13, flex: 1 }}>{d.name}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 13, flex: 1, minWidth: 90, color: d.austritt && d.austritt < toLocalISODate(new Date()) ? TEXT_MUTED : undefined }}>
+                        {d.name}
+                        {d.austritt && d.austritt < toLocalISODate(new Date()) && <span style={{ fontSize: 10.5, marginLeft: 6, background: "#EDEFF2", padding: "1px 7px", borderRadius: 10 }}>ausgeschieden</span>}
+                      </span>
+                      <label style={{ margin: 0, fontSize: 10.5, color: TEXT_MUTED, display: "flex", alignItems: "center", gap: 4 }}
+                        title="Ab wann der Fahrer in Einsatzplan und Neue Tour auswählbar ist (leer = immer)">
+                        Eintritt
+                        <input type="date" value={d.eintritt || ""} onChange={(e) => fahrerDatumAendern(d, { eintritt: e.target.value })} style={{ width: 128, padding: "2px 5px", fontSize: 11.5 }} />
+                      </label>
+                      <label style={{ margin: 0, fontSize: 10.5, color: TEXT_MUTED, display: "flex", alignItems: "center", gap: 4 }}
+                        title="Bis wann der Fahrer auswählbar ist (leer = noch beschäftigt). Ausgeschiedene Fahrer nicht löschen, sondern Austritt eintragen.">
+                        Austritt
+                        <input type="date" value={d.austritt || ""} onChange={(e) => fahrerDatumAendern(d, { austritt: e.target.value })} style={{ width: 128, padding: "2px 5px", fontSize: 11.5 }} />
+                      </label>
                       <button className="ghost" style={{ padding: "4px 8px" }}
                         onClick={() => setConfirmDeleteDriver(confirming ? null : d.id)}>
                         <Trash2 size={13} />
@@ -3857,6 +3887,7 @@ export default function TourenApp() {
               </div>
               <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginTop: 8 }}>
                 Diese Liste ist die Grundlage für die Fahrer-Vorschläge in Einsatzplan, Neue Tour und den Dashboard-Filtern.
+                Ausgeschiedene Fahrer bitte nicht löschen, sondern Austritt eintragen – dann bleiben sie für frühere Wochen auswählbar.
               </div>
             </div>
           </div>
@@ -3939,7 +3970,7 @@ export default function TourenApp() {
                 <select value={editForm.fahrer} style={fieldStyle("fahrer", editErrors)}
                   onChange={(e) => { setEditForm({ ...editForm, fahrer: e.target.value }); setEditErrors(editErrors.filter((k) => k !== "fahrer")); }}>
                   <option value="">Bitte wählen …</option>
-                  {driverOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+                  {fahrerOptionenFuer(editForm.datum, editForm.datum, editForm.fahrer).map((name) => <option key={name} value={name}>{name}</option>)}
                 </select>
               </div>
               <div><label>Auftrags-Nr. *</label>

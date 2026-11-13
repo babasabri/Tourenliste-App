@@ -199,7 +199,17 @@ export async function syncFleet(prev, next) {
 }
 
 // ------------------------------------------------------------------ Fahrer --
-const driverFromDb = (r) => ({ id: r.id, name: r.name });
+// eintritt/austritt (optional): steuern, in welchen Wochen/an welchen Tagen der
+// Fahrer in den Auswahllisten erscheint (z. B. ausgeschiedene Fahrer nur rückwirkend)
+const driverFromDb = (r) => ({ id: r.id, name: r.name, eintritt: r.eintritt || "", austritt: r.austritt || "" });
+
+export async function updateDriver(id, patch) {
+  const p = {};
+  if (patch.eintritt !== undefined) p.eintritt = patch.eintritt || null;
+  if (patch.austritt !== undefined) p.austritt = patch.austritt || null;
+  const { error } = await supabase.from("drivers").update(p).eq("id", id);
+  if (error) throw error;
+}
 
 export async function fetchDrivers() {
   const { data, error } = await supabase.from("drivers").select("*").order("name");
