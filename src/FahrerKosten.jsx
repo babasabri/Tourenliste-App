@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Loader2, CopyCheck, RefreshCw, Info } from "lucide-react";
 import * as fdb from "./fahrerKostenDb";
+import * as abwDb from "./abwesenheitDb";
 
 const MARINE = "#0F2A43";
 const CARD = "#FFFFFF";
@@ -45,17 +46,19 @@ export default function FahrerKosten({ drivers, fleet, einsatz, tours }) {
   const [entwurf, setEntwurf] = useState({});
   const [status, setStatus] = useState({});
   const [rollen, setRollen] = useState({});
+  const [abw, setAbw] = useState([]);
 
   async function neuLaden() {
     setFehler("");
-    try { const [k, r] = await Promise.all([fdb.fetchKosten(), fdb.fetchRollen()]); setKosten(k); setRollen(r); } catch (e) { setFehler("Fahrerkosten konnten nicht geladen werden: " + (e.message || e)); }
+    try { const [k, r, a] = await Promise.all([fdb.fetchKosten(), fdb.fetchRollen(), abwDb.fetchAbwesenheiten().catch(() => [])]); setKosten(k); setRollen(r); setAbw(a); } catch (e) { setFehler("Fahrerkosten konnten nicht geladen werden: " + (e.message || e)); }
     setLaden(false);
   }
   useEffect(() => { neuLaden(); }, []);
 
   const monate = MON.map((_, i) => `${jahr}-${pad2(i + 1)}`);
   // eingetragene Werte + bei Tagessatz-Personen die aus den Touren berechneten Monatswerte
-  const eff = useMemo(() => fdb.effektiveKosten(kosten, rollen, tours), [kosten, rollen, tours]);
+  const eff = useMemo(() => fdb.effektiveKosten(kosten, rollen, tours, abw), [kosten, rollen, tours, abw]);
+  const bezAbw = useMemo(() => fdb.bezahlteAbwesenheitstage(rollen, tours, abw), [rollen, tours, abw]);
   const map = useMemo(() => Object.fromEntries(eff.map((k) => [`${k.fahrer}|${k.monat}`, k.betrag])), [eff]);
   const istTs = (f) => rollen[f]?.rolle === "tagessatz";
 
@@ -74,7 +77,7 @@ export default function FahrerKosten({ drivers, fleet, einsatz, tours }) {
   const ftage = useMemo(() => fdb.fahrtage(tours), [tours]);
 
   async function rolleAendern(f, patch) {
-    const neu = { rolle: rollen[f]?.rolle || "fahrer", funktion: rollen[f]?.funktion || "", tagessatz: rollen[f]?.tagessatz ?? null, ...patch };
+    const neu = { rolle: rollen[f]?.rolle || "fahrer", funktion: rollen[f]?.funktion || "", tagessatz: rollen[f]?.tagessatz ?? null, abwesenheitBezahltAb: rollen[f]?.abwesenheitBezahltAb || "", ...patch };
     try { await fdb.setRolle(f, neu); setRollen((r) => ({ ...r, [f]: neu })); } catch (e) { setFehler("Speichern fehlgeschlagen: " + (e.message || e)); }
   }
 
@@ -85,7 +88,7 @@ export default function FahrerKosten({ drivers, fleet, einsatz, tours }) {
   }, [kosten]);
 
   // Einsatz-Wochen je Fahrer und Monat (Hinweis in der Zelle)
-  const verteilung = useMemo(() => fdb.verteilen(kosten.filter((k) => k.monat.startsWith(`${jahr}-`)), einsatz, null, null, { touren: tours, rollen }), [kosten, einsatz, tours, rollen, jahr]);
+  const verteilung = useMemo(() => fdb.verteilen(kosten.filter((k) => k.monat.startsWith(`${jahr}-`)), einsatz, null, null, { touren: tours, rollen, abwesenheiten: abw }), [kosten, einsatz, tours, rollen, abw, jahr]);
 
   async function speichern(f, monat) {
     const key = `${f}|${monat}`;
@@ -214,6 +217,14 @@ export default function FahrerKosten({ drivers, fleet, einsatz, tours }) {
                           style={{ width: 70, padding: "2px 5px", fontSize: 11, textAlign: "right" }} /> € je Einsatztag
                       </div>
                     )}
+                    {istTs(f) && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 3, fontSize: 10.5, color: TEXT_MUTED }}
+                        title="Ab diesem Datum werden Urlaubs-/Krankentage (aus dem Einsatzplan, Mo-Fr) mit dem Tagessatz bezahlt. Leer = nicht bezahlt.">
+                        Urlaub/Krank bezahlt ab
+                        <input type="date" value={rollen[f]?.abwesenheitBezahltAb || ""} onChange={(e) => rolleAendern(f, { abwesenheitBezahltAb: e.target.value })}
+                          style={{ width: 118, padding: "1px 4px", fontSize: 10.5 }} />
+                      </div>
+                    )}
                     {rollen[f]?.funktion && <div style={{ fontSize: 10.5, color: TEXT_MUTED, marginTop: 2 }}>{rollen[f].funktion}</div>}
                   </td>
                   {monate.map((m) => {
@@ -224,8 +235,9 @@ export default function FahrerKosten({ drivers, fleet, einsatz, tours }) {
                       return (
                         <td key={m} style={{ padding: "6px 4px" }} title="Automatisch: Einsatztage aus den Touren x Tagessatz">
                           <div className="mono" style={{ width: 88, textAlign: "right", fontSize: 12.5, padding: "3px 6px", background: "#F1F6FB", borderRadius: 6, color: n ? MARINE : TEXT_MUTED }}>
-                            {n && rollen[f]?.tagessatz ? fmt(wert) : "–"}
+                            {(n || bezAbw[key]) && rollen[f]?.tagessatz ? fmt(wert) : "–"}
                             {n > 0 && <div style={{ fontSize: 10, color: TEXT_MUTED }}>{n} × {fmt(rollen[f]?.tagessatz)}</div>}
+                            {bezAbw[key] > 0 && <div style={{ fontSize: 10, color: "#1F5F99" }}>+ {bezAbw[key]} Urlaub/Krank</div>}
                           </div>
                         </td>
                       );

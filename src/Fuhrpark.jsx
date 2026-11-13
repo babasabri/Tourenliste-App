@@ -25,6 +25,7 @@ import * as edb from "./ersatzteilDb";
 import * as ldb from "./leasingDb";
 import * as adb from "./abgabenDb";
 import * as fdb from "./fahrerKostenDb";
+import * as abwDb from "./abwesenheitDb";
 import { MAUT_START } from "./mautParser";
 
 const MARINE = "#0F2A43";
@@ -128,6 +129,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
   const [abgaben, setAbgaben] = useState([]);
   const [fahrerKosten, setFahrerKosten] = useState([]);
   const [rollen, setRollen] = useState({});
+  const [abw, setAbw] = useState([]);
   const [laden, setLaden] = useState(true);
   const [fehler, setFehler] = useState("");
 
@@ -135,7 +137,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
     setLaden(true);
     setFehler("");
     try {
-      const [t, tr, m, e, lr, lf, ab, fk, ro] = await Promise.all([tdb.fetchTankvorgaenge(), tdb.fetchTankpoolRechnungen(), mdb.fetchMautPositionen(), edb.fetchPositionen(), ldb.fetchRaten(), ldb.fetchFahrzeuge(), adb.fetchAbgaben(), fdb.fetchKosten(), fdb.fetchRollen()]);
+      const [t, tr, m, e, lr, lf, ab, fk, ro, aw] = await Promise.all([tdb.fetchTankvorgaenge(), tdb.fetchTankpoolRechnungen(), mdb.fetchMautPositionen(), edb.fetchPositionen(), ldb.fetchRaten(), ldb.fetchFahrzeuge(), adb.fetchAbgaben(), fdb.fetchKosten(), fdb.fetchRollen(), abwDb.fetchAbwesenheiten().catch(() => [])]);
       setTank(t);
       setTankRe(tr);
       setMaut(m.filter((x) => x.datum >= MAUT_START));
@@ -145,6 +147,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
       setAbgaben(ab);
       setFahrerKosten(fk);
       setRollen(ro);
+      setAbw(aw);
     } catch (err) {
       setFehler("Daten konnten nicht geladen werden: " + (err.message || err));
     }
@@ -191,7 +194,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
     for (const [lkw, b] of Object.entries(ldb.leasingJeLkw(raten, start, ende))) z(lkw).leasing += b;
     for (const [lkw, b] of Object.entries(adb.abgabenJeLkw(abgaben, start, ende))) z(lkw).versSteuer += b.versicherung + b.steuer;
     let fahrerOffen = 0, verwaltung = 0;
-    for (const [lkw, b] of Object.entries(fdb.jeLkw(fahrerKosten, wochenKm, start, ende, { touren: tours, rollen }))) {
+    for (const [lkw, b] of Object.entries(fdb.jeLkw(fahrerKosten, wochenKm, start, ende, { touren: tours, rollen, abwesenheiten: abw }))) {
       if (lkw === fdb.OFFEN) fahrerOffen += b;
       else if (lkw === fdb.VERWALTUNG) verwaltung += b;
       else z(lkw).fahrer += b;
@@ -205,7 +208,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
       return s;
     }, { km: 0, umsatz: 0, touren: 0, diesel: 0, neben: 0, maut: 0, teile: 0, leasing: 0, versSteuer: 0, fahrer: 0, kosten: 0 });
     return { rows, sum, lager: f.lkw === "ALLE" ? lager : 0, offen: f.lkw === "ALLE" ? offen : 0, fahrerOffen: f.lkw === "ALLE" ? fahrerOffen : 0, verwaltung: f.lkw === "ALLE" ? verwaltung : 0 };
-  }, [tank, maut, teile, raten, abgaben, fahrerKosten, rollen, tours, wochenKm, start, ende, f.lkw, fleetPlates]);
+  }, [tank, maut, teile, raten, abgaben, fahrerKosten, rollen, abw, tours, wochenKm, start, ende, f.lkw, fleetPlates]);
 
   // Verlauf je Monat (Kosten nach Quelle), gleiche Kappung
   const proMonat = useMemo(() => {
@@ -221,7 +224,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
       const anteil = ldb.leasingJeLkw([r], start, ende)[r.kennzeichen];
       if (anteil) m(`${r.monat}-01`).leasing += anteil;
     }
-    for (const a of fdb.verteilen(fahrerKosten, wochenKm, start, ende, { touren: tours, rollen })) {
+    for (const a of fdb.verteilen(fahrerKosten, wochenKm, start, ende, { touren: tours, rollen, abwesenheiten: abw })) {
       if (a.lkw === fdb.OFFEN || a.lkw === fdb.VERWALTUNG || !lkwOk(a.lkw) || !a.betrag) continue;
       m(`${a.monat}-01`).fahrer += a.betrag;
     }
@@ -247,7 +250,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
       const r = map[k];
       return { monat: `${MONATE[mo - 1]} ${j}`, ...r, kosten: r.diesel + r.neben + r.maut + r.teile + r.leasing + r.versSteuer + r.fahrer, km };
     });
-  }, [tank, maut, teile, raten, abgaben, fahrerKosten, rollen, tours, wochenKm, start, ende, f.lkw]);
+  }, [tank, maut, teile, raten, abgaben, fahrerKosten, rollen, abw, tours, wochenKm, start, ende, f.lkw]);
 
   const jahre = useMemo(() => {
     const s = new Set([...tank, ...maut].map((t) => (t.datum || "").slice(0, 4)).filter(Boolean));

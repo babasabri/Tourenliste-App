@@ -5,6 +5,7 @@
 // Aktiv, Urlaub oder Krank: der Fahrer gehört in der Woche zu diesem LKW).
 // Tage ohne Einteilung -> "nicht zugeordnet".
 import { supabase } from "./supabaseClient";
+import { abwesenheitIndex } from "./abwesenheitDb";
 
 export async function fetchKosten() {
   const { data, error } = await supabase.from("fahrer_kosten").select("*").order("monat");
@@ -37,12 +38,12 @@ export async function setKostenBulk(rows) {
 export async function fetchRollen() {
   const { data, error } = await supabase.from("fahrer_rolle").select("*");
   if (error) throw error;
-  return Object.fromEntries(data.map((r) => [r.fahrer, { rolle: r.rolle, funktion: r.funktion || "", tagessatz: r.tagessatz === null ? null : Number(r.tagessatz) }]));
+  return Object.fromEntries(data.map((r) => [r.fahrer, { rolle: r.rolle, funktion: r.funktion || "", tagessatz: r.tagessatz === null ? null : Number(r.tagessatz), abwesenheitBezahltAb: r.abwesenheit_bezahlt_ab || "" }]));
 }
-export async function setRolle(fahrer, { rolle, funktion, tagessatz }) {
+export async function setRolle(fahrer, { rolle, funktion, tagessatz, abwesenheitBezahltAb }) {
   const { error } = await supabase
     .from("fahrer_rolle")
-    .upsert({ fahrer, rolle, funktion: funktion || null, tagessatz: tagessatz ?? null }, { onConflict: "fahrer" });
+    .upsert({ fahrer, rolle, funktion: funktion || null, tagessatz: tagessatz ?? null, abwesenheit_bezahlt_ab: abwesenheitBezahltAb || null }, { onConflict: "fahrer" });
   if (error) throw error;
 }
 
@@ -102,8 +103,27 @@ function einsatzIndex(einsatz) {
 export function verteilen(kostenRoh, einsatz, start, ende, opt = {}) {
   const idx = einsatzIndex(einsatz);
   const tIdx = tourIndex(opt.touren);
+  const aIdx = abwesenheitIndex(opt.abwesenheiten);
   const rollen = opt.rollen || {};
-  const kosten = effektiveKosten(kostenRoh, rollen, opt.touren);
+  const kosten = effektiveKosten(kostenRoh, rollen, opt.touren, opt.abwesenheiten);
+  // "Haupt-LKW" eines Fahrers im Monat: am meisten gefahren laut Touren, sonst
+  // am häufigsten im Einsatzplan - Ziel für Urlaubs-/Krankentage ohne Einplanung
+  const hauptCache = {};
+  const hauptLkw = (fahrer, monat) => {
+    const key = `${fahrer}|${monat}`;
+    if (key in hauptCache) return hauptCache[key];
+    const z = {};
+    for (const [k, lkws] of Object.entries(tIdx)) if (k.startsWith(`${fahrer}|${monat}-`)) for (const l of lkws) z[l] = (z[l] || 0) + 1;
+    if (!Object.keys(z).length) {
+      const [j, m] = monat.split("-").map(Number);
+      for (let t = 1; t <= new Date(j, m, 0).getDate(); t++) {
+        const [wj, kw] = isoWoche(new Date(j, m - 1, t));
+        for (const l of idx[`${fahrer}|${wj}|${kw}`] || []) z[l] = (z[l] || 0) + 1;
+      }
+    }
+    const best = Object.entries(z).sort((a, b) => b[1] - a[1])[0];
+    return (hauptCache[key] = best ? best[0] : null);
+  };
   const out = [];
   for (const k of kosten) {
     const [j, m] = k.monat.split("-").map(Number);
@@ -112,12 +132,16 @@ export function verteilen(kostenRoh, einsatz, start, ende, opt = {}) {
     const add = (l, b) => { anteil[l] = (anteil[l] || 0) + b; };
     if (rollen[k.fahrer]?.rolle === "tagessatz") {
       // jeder Einsatztag (Tag mit Tour) = Tagessatz, auf den gefahrenen LKW
+      // ab "Urlaub/Krank bezahlt ab": Abwesenheitstage (Mo-Fr, ohne Tour) ebenfalls
+      // mit Tagessatz, auf den Haupt-LKW des Monats
       const satz = rollen[k.fahrer].tagessatz || 0;
+      const bezahltAb = rollen[k.fahrer].abwesenheitBezahltAb;
       for (let t = 1; t <= tage; t++) {
         const s = `${k.monat}-${String(t).padStart(2, "0")}`;
         if ((start && s < start) || (ende && s > ende)) continue;
         const lkws = tIdx[`${k.fahrer}|${s}`];
         if (lkws && lkws.length) for (const l of lkws) add(l, satz / lkws.length);
+        else if (bezahltAb && s >= bezahltAb && aIdx[`${k.fahrer}|${s}`]) add(hauptLkw(k.fahrer, k.monat) || OFFEN, satz);
       }
     } else if (rollen[k.fahrer]?.rolle === "anteilig") {
       // erst den ganzen Monat bewerten, dann auf den Zeitraum schneiden - so ergibt
@@ -153,8 +177,9 @@ export function verteilen(kostenRoh, einsatz, start, ende, opt = {}) {
         if ((start && s < start) || (ende && s > ende)) continue;
         const [wj, kw] = isoWoche(d);
         const lkws = idx[`${k.fahrer}|${wj}|${kw}`];
-        if (!lkws || !lkws.length) add(OFFEN, proTag);
-        else for (const l of lkws) add(l, proTag / lkws.length);
+        if (lkws && lkws.length) for (const l of lkws) add(l, proTag / lkws.length);
+        else if (aIdx[`${k.fahrer}|${s}`] || isWochenendeInAbwesenheit(aIdx, k.fahrer, d)) add(hauptLkw(k.fahrer, k.monat) || OFFEN, proTag);
+        else add(OFFEN, proTag);
       }
     }
     for (const [lkw, betrag] of Object.entries(anteil)) out.push({ fahrer: k.fahrer, monat: k.monat, lkw, betrag });
@@ -165,15 +190,46 @@ export function verteilen(kostenRoh, einsatz, start, ende, opt = {}) {
 // Für Personen mit Tagessatz werden die Monatskosten nicht eingetragen, sondern
 // aus den Touren berechnet: Einsatztage (Tage mit Tour) x Tagessatz.
 // Liefert die Kostenliste mit diesen berechneten Zeilen (auto: true, tage: n).
-export function effektiveKosten(kosten, rollen, touren) {
+export function effektiveKosten(kosten, rollen, touren, abwesenheiten) {
   const ts = Object.entries(rollen || {}).filter(([, r]) => r.rolle === "tagessatz" && r.tagessatz).map(([f]) => f);
   if (!ts.length) return kosten;
   const ft = fahrtage(touren);
-  const auto = Object.entries(ft)
-    .map(([key, n]) => { const [f, monat] = key.split("|"); return { f, monat, n }; })
+  const bt = bezahlteAbwesenheitstage(rollen, touren, abwesenheiten);
+  const keys = new Set([...Object.keys(ft), ...Object.keys(bt)]);
+  const auto = Array.from(keys)
+    .map((key) => { const [f, monat] = key.split("|"); return { f, monat, n: ft[key] || 0, a: bt[key] || 0 }; })
     .filter((x) => ts.includes(x.f))
-    .map((x) => ({ fahrer: x.f, monat: x.monat, betrag: x.n * rollen[x.f].tagessatz, bemerkung: "", auto: true, tage: x.n }));
+    .map((x) => ({ fahrer: x.f, monat: x.monat, betrag: (x.n + x.a) * rollen[x.f].tagessatz, bemerkung: "", auto: true, tage: x.n, abwTage: x.a }));
   return [...kosten.filter((k) => !ts.includes(k.fahrer)), ...auto];
+}
+
+// Bezahlte Abwesenheitstage je "fahrer|YYYY-MM" (nur Tagessatz-Personen mit
+// "Urlaub/Krank bezahlt ab", Mo-Fr, nur Tage ohne Tour)
+export function bezahlteAbwesenheitstage(rollen, touren, abwesenheiten) {
+  const out = {};
+  if (!abwesenheiten || !abwesenheiten.length) return out;
+  const tIdx = tourIndex(touren);
+  for (const [key] of Object.entries(abwesenheitIndex(abwesenheiten))) {
+    const [f, d] = key.split("|");
+    const r = (rollen || {})[f];
+    if (!r || r.rolle !== "tagessatz" || !r.abwesenheitBezahltAb || d < r.abwesenheitBezahltAb || tIdx[key]) continue;
+    const mk = `${f}|${d.slice(0, 7)}`;
+    out[mk] = (out[mk] || 0) + 1;
+  }
+  return out;
+}
+
+// Wochenendtag in einer Woche, in der der Fahrer (Mo-Fr) abwesend ist - zählt beim
+// Monatsgehalt wie die Abwesenheitstage dieser Woche
+function isWochenendeInAbwesenheit(aIdx, fahrer, d) {
+  const w = d.getDay();
+  if (w !== 0 && w !== 6) return false;
+  const mo = new Date(d); mo.setDate(d.getDate() - (w === 6 ? 5 : 6));
+  for (let i = 0; i < 5; i++) {
+    const x = new Date(mo); x.setDate(mo.getDate() + i);
+    if (aIdx[`${fahrer}|${iso(x)}`]) return true;
+  }
+  return false;
 }
 
 // Fahrtage je Person und Monat (aus den Touren) -> { "fahrer|YYYY-MM": n }

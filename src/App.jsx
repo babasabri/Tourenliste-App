@@ -14,6 +14,7 @@ import { parseGutschriftPdf } from "./gutschriftParser";
 import { supabase } from "./supabaseClient";
 import FrachtbriefEingang from "./FrachtbriefEingang";
 import Fuhrpark from "./Fuhrpark";
+import Abwesenheiten from "./Abwesenheiten";
 // Export-Bibliotheken (jsPDF, ExcelJS) sind vergleichsweise groß - werden per
 // dynamic import() erst geladen, wenn der Export-Tab tatsächlich genutzt wird,
 // statt das Hauptbundle für alle Nutzer aufzublähen (siehe handleExportPdf/
@@ -3339,8 +3340,11 @@ export default function TourenApp() {
                             </select>
                           </td>
                           <td>
-                            <select value={draft.status} onChange={(e) => setEpDraftField(f.plate, "status", e.target.value)}>
-                              <option>Aktiv</option><option>Urlaub</option><option>Krank</option><option>Inaktiv</option>
+                            <select value={draft.status} onChange={(e) => setEpDraftField(f.plate, "status", e.target.value)}
+                              title="Status des LKW in dieser Woche. Urlaub/Krank des Fahrers unten unter Abwesenheiten eintragen.">
+                              <option value="Aktiv">Aktiv</option>
+                              <option value="Inaktiv">Steht (kein Einsatz)</option>
+                              {(draft.status === "Urlaub" || draft.status === "Krank") && <option value={draft.status}>{draft.status} (alt)</option>}
                             </select>
                           </td>
                           <td className="mono" style={{ fontSize: 12.5, color: TEXT_MUTED, padding: "8px 10px" }}>
@@ -3371,6 +3375,8 @@ export default function TourenApp() {
               Bleibt das Fahrer-Feld leer, greift in "Neue Tour" der Standard-Fahrer aus den Stammdaten.
             </div>
 
+            <Abwesenheiten fahrerNamen={driverOptions} jahr={epJahr} kw={epKw} tours={tours} />
+
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Frühere Wochen</div>
             <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
               <div style={{ overflowX: "auto" }}>
@@ -3394,7 +3400,7 @@ export default function TourenApp() {
                         <td className="mono">KW {e.kw}/{e.jahr}</td>
                         <td className="mono">{e.lkw}</td>
                         <td>{e.fahrer || "–"}</td>
-                        <td>{e.status || "–"}</td>
+                        <td>{e.status === "Inaktiv" ? "Steht" : e.status || "–"}</td>
                         <td className="mono" style={{ textAlign: "right", color: TEXT_MUTED }}>
                           {e.startKmVal !== null ? e.startKmVal.toLocaleString("de-DE") : "–"}
                         </td>
@@ -3472,7 +3478,7 @@ export default function TourenApp() {
                         </span>
                         {inactive && (
                           <span style={{ background: "#EDEFF2", color: TEXT_MUTED, fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20 }}>
-                            {b.status}
+                            {b.status === "Inaktiv" ? "Steht" : b.status}
                           </span>
                         )}
                         {keineTouren && (
