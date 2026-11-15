@@ -6,10 +6,11 @@ import { istGoebel, parseGoebelLines, aufbereitenGoebel } from "./goebelParser";
 import { istTsb, parseTsbLines, aufbereitenTsb } from "./tsbParser";
 import { istEgs, parseEgsLines, aufbereitenEgs } from "./egsParser";
 import { belegVorschlag } from "./belegVorschlag";
+import { zugferdXmlAusPdf, parseZugferd } from "./zugferdParser";
 
-export const UNTERSTUETZT = "Winkler, Heinrich Göbel, TSB Darmstadt, EGS/KÜS";
+export const UNTERSTUETZT = "Winkler, Heinrich Göbel, TSB Darmstadt, EGS/KÜS und alle E-Rechnungen (ZUGFeRD/XRechnung)";
 
-export function belegAusZeilen(lines, dateiname, fleetPlates, finMap, lieferanten = []) {
+export function belegAusZeilen(lines, dateiname, fleetPlates, finMap, lieferanten = [], xml = null) {
   if (istGoebel(lines)) {
     const res = parseGoebelLines(lines);
     if (!res.belegNr || res.positionen.length === 0) throw new Error("Göbel-Beleg ohne Belegnummer oder ohne Positionen - Layout unbekannt.");
@@ -26,6 +27,9 @@ export function belegAusZeilen(lines, dateiname, fleetPlates, finMap, lieferante
     return { dateiname, quelle: "egs_pdf", ...aufbereitenEgs(res, fleetPlates, finMap) };
   }
   if (lines.some((l) => /Winkler/i.test(l))) return winklerAusZeilen(lines, dateiname, fleetPlates, finMap);
+  // E-Rechnung: XML im PDF enthält alle Daten - für jeden Lieferanten
+  if (xml) return { dateiname, quelle: "zugferd", ...parseZugferd(xml, lines, fleetPlates, finMap, lieferanten) };
+
   // Kein eigener Leser: Fehler mit Vorschlag fürs manuelle Formular
   const scan = lines.join("").replace(/\s/g, "").length < 50;
   const err = new Error(scan
@@ -45,5 +49,6 @@ export async function parseBelegPdf(file, fleetPlates, finMap, lieferanten = [])
     throw new Error("PDF konnte nicht geöffnet werden - ist die Datei beschädigt oder passwortgeschützt?");
   }
   const lines = await extractLayoutLines(pdf);
-  return belegAusZeilen(lines, file.name, fleetPlates, finMap, lieferanten);
+  const xml = await zugferdXmlAusPdf(pdf);
+  return belegAusZeilen(lines, file.name, fleetPlates, finMap, lieferanten, xml);
 }

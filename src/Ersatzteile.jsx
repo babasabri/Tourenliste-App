@@ -295,6 +295,7 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
         let dateiPfad = null;
         try { dateiPfad = await edb.uploadDatei(v.file, v.parsed.lieferant); } catch { dateiPfad = null; }
         pos += await edb.importBeleg({ ...v.parsed, dateiPfad });
+        if (!lieferantenStamm.some((l) => l.name.toLowerCase() === String(v.parsed.lieferant).toLowerCase())) await edb.addLieferant(v.parsed.lieferant).catch(() => {});
         offen += v.parsed.positionen.filter((p) => !p.lkw).length;
         n++;
       } catch (err) {
@@ -416,7 +417,7 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
         <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 10 }}>
           <b>Manuell</b> für Werkstätten, andere Teilehändler, TÜV/AU und Käufe ohne Beleg – mit Teilen und Arbeitslohn getrennt, PDF/Foto anhängbar.
         </div>
-        <div style={{ fontSize: 13, fontWeight: 600, color: TEXT, marginBottom: 4 }}>PDF-Import: Winkler, Heinrich Göbel, TSB Darmstadt, EGS (TÜV/AU)</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: TEXT, marginBottom: 4 }}>PDF-Import: E-Rechnungen (ZUGFeRD) jedes Lieferanten · Winkler · Heinrich Göbel · TSB Darmstadt · EGS (TÜV/AU)</div>
         <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 14 }}>
           Eine oder mehrere PDFs auf einmal auswählen – der Lieferant wird automatisch erkannt. Die Positionen werden direkt aus dem Text gelesen
           (keine KI) und gegen die Belegsumme geprüft. Das Fahrzeug kommt aus Kennzeichen, Bestell-Daten bzw. Fahrgestellnummer auf dem Beleg –

@@ -31,14 +31,19 @@ export function belegVorschlag(lines, fleetPlates, finMap, lieferanten) {
   const textNorm = norm(text);
   const treffer = (lieferanten || [])
     .map((l) => l.name)
-    .filter((n) => n && norm(n).length >= 3 && textNorm.includes(norm(n)))
+    .filter((n) => {
+      if (!n || norm(n).length < 3) return false;
+      // kurze Namen (TSB, EGS …) nur als eigenes Wort, sonst Treffer in "GutschriftSBetrag"
+      if (norm(n).length <= 4) return new RegExp(`(^|[^A-Za-zÄÖÜäöü])${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^A-Za-zÄÖÜäöü]|$)`, "i").test(text);
+      return textNorm.includes(norm(n));
+    })
     .sort((a, b) => b.length - a.length);
   if (treffer.length) v.lieferant = treffer[0];
   else {
     // sonst die Firmenzeile oben (GmbH/AG/KG …), die nicht Royal Logistik ist
     const firma = lines.slice(0, 25).map((l) => l.trim()).find((l) => /\b(GmbH|AG|KG|e\.K\.|OHG|UG)\b/.test(l) && !/royal/i.test(l) && !/^(im Namen|USt|Sitz|Geschäftsf|Registerger|Bankverb)/i.test(l));
     if (firma) {
-      const teil = firma.split(/\s{2,}|[|,]/).find((t) => /\b(GmbH|AG|KG|e\.K\.|OHG|UG)\b/.test(t)) || firma;
+      const teil = firma.split(/\s{2,}|[|,]|\s[-–]\s/).find((t) => /\b(GmbH|AG|KG|e\.K\.|OHG|UG)\b/.test(t)) || firma;
       v.lieferant = teil.replace(/\s+/g, " ").trim().slice(0, 60);
     }
   }
