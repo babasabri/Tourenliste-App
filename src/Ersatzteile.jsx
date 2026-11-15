@@ -12,7 +12,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Upload, Loader2, Trash2, RefreshCw, CheckCircle2, AlertTriangle, Scissors, X, Plus, Paperclip, Pencil, FilePlus2 } from "lucide-react";
-import { parseWinklerPdf, KATEGORIEN } from "./winklerParser";
+import { KATEGORIEN } from "./winklerParser";
+import { parseBelegPdf } from "./belegParser";
 import * as edb from "./ersatzteilDb";
 import BelegErfassen from "./BelegErfassen";
 
@@ -227,7 +228,7 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
     const out = [];
     for (const file of files) {
       try {
-        const parsed = await parseWinklerPdf(file, fleetPlates, finMap);
+        const parsed = await parseBelegPdf(file, fleetPlates, finMap);
         const key = `${parsed.lieferant}|${parsed.belegNr}`;
         const doppelt = out.some((o) => o.parsed && `${o.parsed.lieferant}|${o.parsed.belegNr}` === key);
         out.push({ dateiname: file.name, file, parsed, schonDa: bekannte.has(key) || doppelt });
@@ -368,11 +369,11 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
         <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 10 }}>
           <b>Manuell</b> für Werkstätten, andere Teilehändler, TÜV/AU und Käufe ohne Beleg – mit Teilen und Arbeitslohn getrennt, PDF/Foto anhängbar.
         </div>
-        <div style={{ fontSize: 13, fontWeight: 600, color: TEXT, marginBottom: 4 }}>Winkler: Rechnungen & Gutschriften als PDF hochladen</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: TEXT, marginBottom: 4 }}>PDF-Import: Winkler und Heinrich Göbel</div>
         <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 14 }}>
-          Eine oder mehrere PDFs auf einmal auswählen. Die Positionen werden direkt aus dem Text gelesen (keine KI) und gegen „Summe Positionen“
-          geprüft. Das Fahrzeug kommt aus den Bestell-Daten bzw. der Fahrgestellnummer auf dem Beleg – fehlt es, ordnest du die Position danach
-          unten selbst zu. Schon importierte Belege werden erkannt und übersprungen.
+          Eine oder mehrere PDFs auf einmal auswählen – der Lieferant wird automatisch erkannt. Die Positionen werden direkt aus dem Text gelesen
+          (keine KI) und gegen die Belegsumme geprüft. Das Fahrzeug kommt aus Kennzeichen, Bestell-Daten bzw. Fahrgestellnummer auf dem Beleg –
+          fehlt es, ordnest du die Position danach unten selbst zu. Bei Göbel werden Teile und Arbeit automatisch getrennt. Schon importierte Belege werden erkannt und übersprungen.
           {letzterBeleg && <> Letzter erfasster Beleg: <b>{dmy(letzterBeleg)}</b>.</>}
         </div>
         <label className="ghost" style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: parsing ? "wait" : "pointer", border: `1px solid ${BORDER}`, borderRadius: 6, padding: "7px 12px", fontSize: 13, color: TEXT, margin: 0, width: "auto" }}>
@@ -389,7 +390,7 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
             <div style={{ overflowX: "auto" }}>
               <table>
                 <thead>
-                  <tr><th>Datei</th><th>Art</th><th>Beleg</th><th>Datum</th><th style={right}>Pos.</th><th style={right}>Netto</th><th>Fahrzeuge</th><th>Prüfung</th></tr>
+                  <tr><th>Datei</th><th>Lieferant</th><th>Art</th><th>Beleg</th><th>Datum</th><th style={right}>Pos.</th><th style={right}>Netto</th><th>Fahrzeuge</th><th>Prüfung</th></tr>
                 </thead>
                 <tbody>
                   {vorschau.map((v, i) => {
@@ -404,6 +405,7 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
                     return (
                       <tr key={i} style={p?.belegart === "gutschrift" ? { background: GS_BG } : undefined}>
                         <td style={{ fontSize: 12 }}>{v.dateiname}</td>
+                        <td style={{ fontSize: 12 }}>{p?.lieferant || "–"}</td>
                         <td>{p ? <BelegBadge art={p.belegart} /> : "–"}</td>
                         <td className="mono">{p?.belegNr || "–"}</td>
                         <td className="mono">{p ? dmy(p.belegDatum) : "–"}</td>

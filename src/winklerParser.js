@@ -179,18 +179,9 @@ export function aufbereiten(res, fleetPlates, finMap) {
   };
 }
 
-export async function parseWinklerPdf(file, fleetPlates, finMap) {
-  const pdfjsLib = await loadPdfjs();
-  const buf = await file.arrayBuffer();
-  let pdf;
-  try {
-    pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
-  } catch {
-    throw new Error("PDF konnte nicht geöffnet werden - ist die Datei beschädigt oder passwortgeschützt?");
-  }
-  const lines = await extractLayoutLines(pdf);
-  if (!lines.some((l) => /Winkler/i.test(l))) throw new Error("Kein Winkler-Beleg erkannt (bisher werden nur Winkler-Rechnungen/-Gutschriften unterstützt).");
+// Zeilen eines bereits geöffneten PDFs als Winkler-Beleg auswerten
+export function winklerAusZeilen(lines, dateiname, fleetPlates, finMap) {
   const res = parseWinklerLines(lines);
   if (!res.belegNr || res.positionen.length === 0) throw new Error("Winkler-Beleg ohne Belegnummer oder ohne Positionen - Layout unbekannt.");
-  return { dateiname: file.name, ...aufbereiten(res, fleetPlates, finMap) };
+  return { dateiname, ...aufbereiten(res, fleetPlates, finMap) };
 }
