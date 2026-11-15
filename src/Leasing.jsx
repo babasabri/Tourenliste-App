@@ -4,7 +4,7 @@
 // leere Zellen eines Monats mit der Rate des Vormonats.
 // Die Raten fließen in die Fuhrpark-Übersicht (Kosten je LKW, Kosten/km) ein.
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Loader2, Plus, Trash2, CopyCheck, RefreshCw } from "lucide-react";
 import * as ldb from "./leasingDb";
 
@@ -46,6 +46,68 @@ function Badge({ art }) {
 }
 const ARTEN = [["Leasing", "Leasing"], ["Miete", "Miete"], ["Eigentum", "Eigentum (abbezahlt)"]];
 const dmy = (iso) => (iso ? iso.slice(0, 10).split("-").reverse().join(".") : "");
+const kurzD = (iso) => { const [y, m, d] = iso.split("-"); return `${d}.${m}.${y.slice(2)}`; };
+
+// Zuordnungsverlauf eines Aufliegers bearbeiten: Zeiträume mit LKW (bis leer = bis heute)
+function ZuordnungEditor({ f, lkwListe, onChanged, setFehler }) {
+  const letzte = f.zuordnung[f.zuordnung.length - 1];
+  const naechsterVon = () => {
+    if (!letzte) return `${new Date().getFullYear()}-01-01`;
+    if (!letzte.bis) { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+    const [y, m, d] = letzte.bis.split("-").map(Number); const x = new Date(y, m - 1, d + 1);
+    return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+  };
+  const [neu, setNeu] = useState({ lkw: "", von: naechsterVon(), bis: "" });
+  async function run(fn) { try { await fn(); onChanged(); } catch (e) { setFehler(e.message || String(e)); } }
+  return (
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: TEXT, marginBottom: 6 }}>{f.kennzeichen} – bei welchem LKW wann?</div>
+      <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginBottom: 8 }}>
+        Die Miete zählt in der Fuhrpark-Übersicht tagesgenau beim jeweiligen LKW; Tage ohne Zuordnung in der Sammelzeile „Auflieger“. „bis“ leer = bis heute.
+      </div>
+      <table style={{ width: "auto" }}>
+        <tbody>
+          {f.zuordnung.map((z) => (
+            <tr key={z.id}>
+              <td>
+                <select value={z.lkw} onChange={(e) => run(() => ldb.updateZuordnung(z.id, { lkw: e.target.value }))} style={{ width: 120 }}>
+                  {[...new Set([...lkwListe, z.lkw])].map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
+              </td>
+              <td><input type="date" value={z.von} onChange={(e) => e.target.value && run(() => ldb.updateZuordnung(z.id, { von: e.target.value }))} style={{ width: 140 }} /></td>
+              <td><input type="date" value={z.bis} onChange={(e) => run(() => ldb.updateZuordnung(z.id, { bis: e.target.value }))} style={{ width: 140 }} /></td>
+              <td><button className="ghost" style={{ padding: "3px 8px" }} onClick={() => run(() => ldb.deleteZuordnung(z.id))}><Trash2 size={12} /></button></td>
+            </tr>
+          ))}
+          <tr>
+            <td>
+              <select value={neu.lkw} onChange={(e) => setNeu({ ...neu, lkw: e.target.value })} style={{ width: 120 }}>
+                <option value="">– LKW –</option>
+                {lkwListe.map((k) => <option key={k} value={k}>{k}</option>)}
+              </select>
+            </td>
+            <td><input type="date" value={neu.von} onChange={(e) => setNeu({ ...neu, von: e.target.value })} style={{ width: 140 }} /></td>
+            <td><input type="date" value={neu.bis} onChange={(e) => setNeu({ ...neu, bis: e.target.value })} style={{ width: 140 }} /></td>
+            <td>
+              <button className="ghost" style={{ padding: "3px 9px" }} disabled={!neu.lkw || !neu.von}
+                onClick={() => run(async () => {
+                  // offenen Vorgänger automatisch am Vortag beenden
+                  if (letzte && !letzte.bis && letzte.von < neu.von) {
+                    const [y, m, d] = neu.von.split("-").map(Number); const x = new Date(y, m - 1, d - 1);
+                    await ldb.updateZuordnung(letzte.id, { bis: `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}` });
+                  }
+                  await ldb.addZuordnung(f.kennzeichen, neu);
+                  setNeu({ lkw: "", von: neu.von, bis: "" });
+                })}>
+                <Plus size={13} /> Wechsel eintragen
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 export default function Leasing() {
   const heute = new Date();
@@ -57,6 +119,7 @@ export default function Leasing() {
   const [entwurf, setEntwurf] = useState({}); // "kz|2026-01" -> Text während der Eingabe
   const [status, setStatus] = useState({}); // "kz|2026-01" -> "speichert" | "ok" | "fehler"
   const [neu, setNeu] = useState({ kennzeichen: "", art: "Miete", typ: "LKW" });
+  const [zuOffen, setZuOffen] = useState(null);
 
   async function neuLaden() {
     setLaden(true);
@@ -212,7 +275,7 @@ export default function Leasing() {
                     <div className="mono" style={{ fontWeight: 600 }}>{f.kennzeichen}</div>
                     <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                       <Badge art={f.art} />
-                      {f.typ === "Auflieger" && <span style={{ fontSize: 10.5, fontWeight: 600, padding: "2px 7px", borderRadius: 10, background: "#EEF0F3", color: TEXT_MUTED }}>Auflieger{f.zugeordnetLkw ? ` · ${f.zugeordnetLkw}` : ""}</span>}
+                      {f.typ === "Auflieger" && <span style={{ fontSize: 10.5, fontWeight: 600, padding: "2px 7px", borderRadius: 10, background: "#EEF0F3", color: TEXT_MUTED }}>Auflieger{ldb.lkwAm(f, new Date().toISOString().slice(0, 10)) ? ` · ${ldb.lkwAm(f, new Date().toISOString().slice(0, 10))}` : ""}</span>}
                     </div>
                     {f.abbezahltAm && <div style={{ fontSize: 10.5, color: TEXT_MUTED, marginTop: 2 }}>{f.art === "Miete" ? "zurück" : "abbezahlt"} {dmy(f.abbezahltAm)}</div>}
                   </td>
@@ -259,14 +322,14 @@ export default function Leasing() {
           <table>
             <thead>
               <tr>
-                <th>Kennzeichen</th><th>Fahrzeug</th><th title="Auflieger: fester LKW (Kosten zählen in der Fuhrpark-Übersicht bei diesem LKW), optional ab Datum">fest bei LKW · seit</th><th>Art</th><th>Leasinggeber / Vermieter</th><th>Vertrags-Nr.</th>
+                <th>Kennzeichen</th><th>Fahrzeug</th><th title="Auflieger: bei welchem LKW wann (Kosten zählen in der Fuhrpark-Übersicht tagesgenau beim LKW)">bei LKW</th><th>Art</th><th>Leasinggeber / Vermieter</th><th>Vertrags-Nr.</th>
                 <th title="Leasing/Eigentum: abbezahlt am · Miete: zurückgegeben am – danach keine Rate mehr">abbezahlt / zurück am</th><th>Schlussrate am</th><th style={right}>Schlussrate netto</th>
                 <th>Bemerkung</th><th style={right}>Raten erfasst</th><th></th>
               </tr>
             </thead>
             <tbody>
-              {fahrzeuge.map((f) => (
-                <tr key={f.kennzeichen}>
+              {fahrzeuge.map((f) => (<Fragment key={f.kennzeichen}>
+                <tr>
                   <td className="mono" style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{f.kennzeichen}</td>
                   <td>
                     <select value={f.typ} onChange={(e) => fahrzeugAendern(f.kennzeichen, { typ: e.target.value })} style={{ width: 105 }}>
@@ -274,17 +337,17 @@ export default function Leasing() {
                       <option>Auflieger</option>
                     </select>
                   </td>
-                  <td style={{ whiteSpace: "nowrap" }}>
+                  <td style={{ whiteSpace: "nowrap", fontSize: 12 }}>
                     {f.typ === "Auflieger" ? (
                       <>
-                        <select value={f.zugeordnetLkw} onChange={(e) => fahrzeugAendern(f.kennzeichen, { zugeordnetLkw: e.target.value })} style={{ width: 120 }}>
-                          <option value="">– keiner –</option>
-                          {fahrzeuge.filter((x) => x.typ !== "Auflieger").map((x) => <option key={x.kennzeichen} value={x.kennzeichen}>{x.kennzeichen}</option>)}
-                        </select>
-                        {f.zugeordnetLkw && (
-                          <input type="date" value={f.zugeordnetSeit} title="seit (leer = gesamter Zeitraum)" onChange={(e) => fahrzeugAendern(f.kennzeichen, { zugeordnetSeit: e.target.value })}
-                            style={{ width: 132, marginLeft: 6 }} />
-                        )}
+                        {f.zuordnung.length === 0 ? <span style={{ color: TEXT_MUTED }}>keiner</span> : f.zuordnung.map((z) => (
+                          <div key={z.id} className="mono" style={{ fontSize: 11.5 }}>
+                            {z.lkw} <span style={{ color: TEXT_MUTED }}>{kurzD(z.von)}–{z.bis ? kurzD(z.bis) : "heute"}</span>
+                          </div>
+                        ))}
+                        <button className="ghost" style={{ padding: "1px 7px", fontSize: 11, marginTop: 3 }} onClick={() => setZuOffen(zuOffen === f.kennzeichen ? null : f.kennzeichen)}>
+                          {zuOffen === f.kennzeichen ? "schließen" : "bearbeiten"}
+                        </button>
                       </>
                     ) : <span style={{ color: TEXT_MUTED }}>–</span>}
                   </td>
@@ -324,6 +387,14 @@ export default function Leasing() {
                   <td className="mono" style={right}>{raten.filter((r) => r.kennzeichen === f.kennzeichen).length}</td>
                   <td><button className="ghost" title="Fahrzeug entfernen" onClick={() => fahrzeugLoeschen(f)} style={{ padding: "4px 8px" }}><Trash2 size={13} /></button></td>
                 </tr>
+                {zuOffen === f.kennzeichen && f.typ === "Auflieger" && (
+                  <tr>
+                    <td colSpan={13} style={{ background: "#F7F9FB", padding: "10px 14px" }}>
+                      <ZuordnungEditor f={f} lkwListe={fahrzeuge.filter((x) => x.typ !== "Auflieger").map((x) => x.kennzeichen)} onChanged={neuLaden} setFehler={setFehler} />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
               ))}
             </tbody>
           </table>
