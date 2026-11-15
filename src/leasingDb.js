@@ -13,14 +13,15 @@ export async function fetchFahrzeuge() {
     vertragNr: r.vertrag_nr || "",
     bemerkung: r.bemerkung || "",
     reihenfolge: r.reihenfolge,
-    abbezahltAm: r.abbezahlt_am || "",
+    abbezahltAm: r.abbezahlt_am || "", // bei Miete: zurückgegeben am
+    typ: r.typ || "LKW",
     schlussrateDatum: r.schlussrate_datum || "",
     schlussrateBetrag: r.schlussrate_betrag === null || r.schlussrate_betrag === undefined ? null : Number(r.schlussrate_betrag),
   }));
 }
 
-export async function addFahrzeug({ kennzeichen, art }) {
-  const { error } = await supabase.from("leasing_fahrzeuge").insert({ kennzeichen, art, reihenfolge: 100 });
+export async function addFahrzeug({ kennzeichen, art, typ }) {
+  const { error } = await supabase.from("leasing_fahrzeuge").insert({ kennzeichen, art, typ: typ || "LKW", reihenfolge: typ === "Auflieger" ? 120 : 100 });
   if (error) throw new Error(error.code === "23505" ? `${kennzeichen} ist schon angelegt` : error.message);
 }
 
@@ -31,6 +32,7 @@ export async function updateFahrzeug(kennzeichen, patch) {
   if (patch.vertragNr !== undefined) p.vertrag_nr = patch.vertragNr || null;
   if (patch.bemerkung !== undefined) p.bemerkung = patch.bemerkung || null;
   if (patch.abbezahltAm !== undefined) p.abbezahlt_am = patch.abbezahltAm || null;
+  if (patch.typ !== undefined) p.typ = patch.typ;
   if (patch.schlussrateDatum !== undefined) p.schlussrate_datum = patch.schlussrateDatum || null;
   if (patch.schlussrateBetrag !== undefined) p.schlussrate_betrag = patch.schlussrateBetrag;
   const { error } = await supabase.from("leasing_fahrzeuge").update(p).eq("kennzeichen", kennzeichen);

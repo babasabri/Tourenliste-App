@@ -56,7 +56,7 @@ export default function Leasing() {
   const [fehler, setFehler] = useState("");
   const [entwurf, setEntwurf] = useState({}); // "kz|2026-01" -> Text während der Eingabe
   const [status, setStatus] = useState({}); // "kz|2026-01" -> "speichert" | "ok" | "fehler"
-  const [neu, setNeu] = useState({ kennzeichen: "", art: "Miete" });
+  const [neu, setNeu] = useState({ kennzeichen: "", art: "Miete", typ: "LKW" });
 
   async function neuLaden() {
     setLaden(true);
@@ -134,8 +134,8 @@ export default function Leasing() {
     const kz = neu.kennzeichen.trim().toUpperCase().replace(/\s+/g, " ");
     if (!kz) return;
     try {
-      await ldb.addFahrzeug({ kennzeichen: kz, art: neu.art });
-      setNeu({ kennzeichen: "", art: "Miete" });
+      await ldb.addFahrzeug({ kennzeichen: kz, art: neu.art, typ: neu.typ });
+      setNeu({ kennzeichen: "", art: "Miete", typ: "LKW" });
       neuLaden();
     } catch (e) {
       setFehler(e.message || String(e));
@@ -210,8 +210,11 @@ export default function Leasing() {
                 <tr key={f.kennzeichen}>
                   <td style={{ position: "sticky", left: 0, background: CARD, zIndex: 1, whiteSpace: "nowrap" }}>
                     <div className="mono" style={{ fontWeight: 600 }}>{f.kennzeichen}</div>
-                    <Badge art={f.art} />
-                    {f.abbezahltAm && <div style={{ fontSize: 10.5, color: TEXT_MUTED, marginTop: 2 }}>abbezahlt {dmy(f.abbezahltAm)}</div>}
+                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                      <Badge art={f.art} />
+                      {f.typ === "Auflieger" && <span style={{ fontSize: 10.5, fontWeight: 600, padding: "2px 7px", borderRadius: 10, background: "#EEF0F3", color: TEXT_MUTED }}>Auflieger</span>}
+                    </div>
+                    {f.abbezahltAm && <div style={{ fontSize: 10.5, color: TEXT_MUTED, marginTop: 2 }}>{f.art === "Miete" ? "zurück" : "abbezahlt"} {dmy(f.abbezahltAm)}</div>}
                   </td>
                   {monate.map((m) => {
                     const key = `${f.kennzeichen}|${m}`;
@@ -219,9 +222,9 @@ export default function Leasing() {
                     if (wert === undefined && !(key in entwurf) && ldb.nachAbbezahlt(f, m)) {
                       return (
                         <td key={m} style={{ padding: "6px 4px" }}>
-                          <div title={`Abbezahlt am ${dmy(f.abbezahltAm)} – keine Rate mehr`} onDoubleClick={() => setEntwurf((d) => ({ ...d, [key]: "" }))}
-                            style={{ width: 84, textAlign: "center", fontSize: 10.5, color: "#2F8F6B", padding: "6px 0", background: "#F1F8F4", borderRadius: 6 }}>
-                            abbezahlt
+                          <div title={`${f.art === "Miete" ? "Zurückgegeben" : "Abbezahlt"} am ${dmy(f.abbezahltAm)} – keine Rate mehr (Doppelklick, falls doch)`} onDoubleClick={() => setEntwurf((d) => ({ ...d, [key]: "" }))}
+                            style={{ width: 84, textAlign: "center", fontSize: 10.5, color: f.art === "Miete" ? TEXT_MUTED : "#2F8F6B", padding: "6px 0", background: f.art === "Miete" ? "#F2F4F6" : "#F1F8F4", borderRadius: 6 }}>
+                            {f.art === "Miete" ? "zurück" : "abbezahlt"}
                           </div>
                         </td>
                       );
@@ -256,8 +259,8 @@ export default function Leasing() {
           <table>
             <thead>
               <tr>
-                <th>Kennzeichen</th><th>Art</th><th>Leasinggeber / Vermieter</th><th>Vertrags-Nr.</th>
-                <th>abbezahlt am</th><th>Schlussrate am</th><th style={right}>Schlussrate netto</th>
+                <th>Kennzeichen</th><th>Fahrzeug</th><th>Art</th><th>Leasinggeber / Vermieter</th><th>Vertrags-Nr.</th>
+                <th title="Leasing/Eigentum: abbezahlt am · Miete: zurückgegeben am – danach keine Rate mehr">abbezahlt / zurück am</th><th>Schlussrate am</th><th style={right}>Schlussrate netto</th>
                 <th>Bemerkung</th><th style={right}>Raten erfasst</th><th></th>
               </tr>
             </thead>
@@ -265,6 +268,12 @@ export default function Leasing() {
               {fahrzeuge.map((f) => (
                 <tr key={f.kennzeichen}>
                   <td className="mono" style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{f.kennzeichen}</td>
+                  <td>
+                    <select value={f.typ} onChange={(e) => fahrzeugAendern(f.kennzeichen, { typ: e.target.value })} style={{ width: 105 }}>
+                      <option>LKW</option>
+                      <option>Auflieger</option>
+                    </select>
+                  </td>
                   <td>
                     <select value={f.art} onChange={(e) => fahrzeugAendern(f.kennzeichen, { art: e.target.value })} style={{ width: 170 }}>
                       {ARTEN.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
@@ -312,7 +321,11 @@ export default function Leasing() {
               onKeyDown={(e) => e.key === "Enter" && fahrzeugAnlegen()} style={{ width: 200 }} />
           </div>
           <div>
-            <label>Art</label>
+            <label>Fahrzeug · Art</label>
+            <select value={neu.typ} onChange={(e) => setNeu({ ...neu, typ: e.target.value })} style={{ width: 105, marginRight: 8 }}>
+              <option>LKW</option>
+              <option>Auflieger</option>
+            </select>
             <select value={neu.art} onChange={(e) => setNeu({ ...neu, art: e.target.value })} style={{ width: 170 }}>
               {ARTEN.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
             </select>

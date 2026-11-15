@@ -40,6 +40,7 @@ const DANGER_BG = "#FBE9E5";
 const SUCCESS = "#2F8F6B";
 const WARN_BG = "#FDF1DD";
 
+const AUFLIEGER = "Auflieger";
 const REITER = [
   { id: "uebersicht", label: "Übersicht", icon: LayoutGrid },
   { id: "tanken", label: "Tankvorgänge", icon: Fuel },
@@ -191,7 +192,9 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
     for (const t of tours || []) if (drin(t.datum) && t.lkw) { const r = z(t.lkw); r.umsatz += umsatzVon(t); r.touren++; }
     const km = kmJeLkw(wochenKm, start, ende);
     for (const [lkw, k] of Object.entries(km)) z(lkw).km += k;
-    for (const [lkw, b] of Object.entries(ldb.leasingJeLkw(raten, start, ende))) z(lkw).leasing += b;
+    // Auflieger (Leasing/Miete mit Fahrzeugart "Auflieger") gesammelt in einer Zeile
+    const aufl = new Set(vertraege.filter((v) => v.typ === "Auflieger").map((v) => v.kennzeichen));
+    for (const [lkw, b] of Object.entries(ldb.leasingJeLkw(raten, start, ende))) z(aufl.has(lkw) ? AUFLIEGER : lkw).leasing += b;
     for (const [lkw, b] of Object.entries(adb.abgabenJeLkw(abgaben, start, ende))) z(lkw).versSteuer += b.versicherung + b.steuer;
     let fahrerOffen = 0, verwaltung = 0;
     for (const [lkw, b] of Object.entries(fdb.jeLkw(fahrerKosten, wochenKm, start, ende, { touren: tours, rollen, abwesenheiten: abw }))) {
@@ -199,16 +202,16 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
       else if (lkw === fdb.VERWALTUNG) verwaltung += b;
       else z(lkw).fahrer += b;
     }
-    const reihenfolge = [...fleetPlates, ...Object.keys(zeilen).filter((p) => !fleetPlates.includes(p)).sort()];
+    const reihenfolge = [...fleetPlates, ...Object.keys(zeilen).filter((p) => !fleetPlates.includes(p) && p !== AUFLIEGER).sort(), AUFLIEGER];
     const rows = reihenfolge.map((p) => zeilen[p]).filter((r) => r && (r.km || r.umsatz || r.diesel || r.neben || r.maut || r.teile || r.leasing || r.versSteuer || r.fahrer))
-      .filter((r) => f.lkw === "ALLE" || r.lkw === f.lkw)
+      .filter((r) => f.lkw === "ALLE" ? true : r.lkw === f.lkw)
       .map((r) => ({ ...r, kosten: r.diesel + r.neben + r.maut + r.teile + r.leasing + r.versSteuer + r.fahrer }));
     const sum = rows.reduce((s, r) => {
       for (const k of ["km", "umsatz", "touren", "diesel", "neben", "maut", "teile", "leasing", "versSteuer", "fahrer", "kosten"]) s[k] += r[k];
       return s;
     }, { km: 0, umsatz: 0, touren: 0, diesel: 0, neben: 0, maut: 0, teile: 0, leasing: 0, versSteuer: 0, fahrer: 0, kosten: 0 });
     return { rows, sum, lager: f.lkw === "ALLE" ? lager : 0, offen: f.lkw === "ALLE" ? offen : 0, fahrerOffen: f.lkw === "ALLE" ? fahrerOffen : 0, verwaltung: f.lkw === "ALLE" ? verwaltung : 0 };
-  }, [tank, maut, teile, raten, abgaben, fahrerKosten, rollen, abw, tours, wochenKm, start, ende, f.lkw, fleetPlates]);
+  }, [tank, maut, teile, raten, vertraege, abgaben, fahrerKosten, rollen, abw, tours, wochenKm, start, ende, f.lkw, fleetPlates]);
 
   // Verlauf je Monat (Kosten nach Quelle), gleiche Kappung
   const proMonat = useMemo(() => {
@@ -355,7 +358,9 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
                       <tr key={r.lkw}>
                         <td className="mono" style={{ fontWeight: 600, whiteSpace: "nowrap" }}>
                           {r.lkw}
-                          {!fleetPlates.includes(r.lkw) && <div style={{ fontSize: 10.5, color: TEXT_MUTED, fontWeight: 400 }}>nicht im Fuhrpark</div>}
+                          {r.lkw === AUFLIEGER
+                            ? <div style={{ fontSize: 10.5, color: TEXT_MUTED, fontWeight: 400, fontFamily: "inherit" }}>alle, ohne LKW-Zuordnung</div>
+                            : !fleetPlates.includes(r.lkw) && <div style={{ fontSize: 10.5, color: TEXT_MUTED, fontWeight: 400 }}>nicht im Fuhrpark</div>}
                         </td>
                         <td className="mono" style={right}>{kmTxt(r.km)}</td>
                         <td className="mono" style={right}>{euro(r.umsatz)}</td>
