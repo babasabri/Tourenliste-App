@@ -34,6 +34,10 @@ const fromDb = (r) => {
     bezugPos: r.bezug_pos,
     grund: r.gutschrift_grund,
     hinweis: r.hinweis || "",
+    anlass: r.anlass || "",
+    kmStand: r.km_stand ?? null,
+    quelle: b.quelle || "winkler_pdf",
+    dateiPfad: b.datei_pfad || "",
   };
 };
 
@@ -44,7 +48,7 @@ export async function fetchPositionen() {
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await supabase
       .from("ersatzteil_positionen")
-      .select("*, ersatzteil_belege(lieferant, beleg_nr, belegart, beleg_datum)")
+      .select("*, ersatzteil_belege(lieferant, beleg_nr, belegart, beleg_datum, quelle, datei_pfad)")
       .order("id", { ascending: true })
       .range(from, from + PAGE - 1);
     if (error) throw error;
@@ -67,6 +71,9 @@ export async function fetchBelege() {
     brutto: num(r.brutto),
     dateiname: r.dateiname,
     importiertAm: r.importiert_am,
+    quelle: r.quelle || "winkler_pdf",
+    dateiPfad: r.datei_pfad || "",
+    bemerkung: r.bemerkung || "",
   }));
 }
 
@@ -88,6 +95,9 @@ export async function importBeleg(parsed) {
       netto: parsed.netto,
       brutto: parsed.brutto,
       dateiname: parsed.dateiname,
+      quelle: parsed.quelle || "winkler_pdf",
+      datei_pfad: parsed.dateiPfad || null,
+      bemerkung: parsed.bemerkung || null,
     },
     p_positionen: parsed.positionen,
   });
@@ -113,4 +123,44 @@ export async function aufteilen(id, teile) {
 export async function deleteBeleg(id) {
   const { error } = await supabase.from("ersatzteil_belege").delete().eq("id", id);
   if (error) throw error;
+}
+
+// ---------------------------------------------------- Werkstatt & Teile --
+export async function fetchLieferanten() {
+  const { data, error } = await supabase.from("werkstatt_lieferanten").select("*").order("name");
+  if (error) throw error;
+  return data;
+}
+export async function addLieferant(name) {
+  const { error } = await supabase.from("werkstatt_lieferanten").upsert({ name }, { onConflict: "name", ignoreDuplicates: true });
+  if (error) throw error;
+}
+
+// PDF/Foto zum Beleg in den privaten Bucket "belege" laden -> Pfad
+export async function uploadDatei(file, lieferant) {
+  const jahr = new Date().getFullYear();
+  const sauber = (s) => String(s || "").normalize("NFKD").replace(/[^\w.-]+/g, "_").slice(0, 60);
+  const pfad = `${jahr}/${sauber(lieferant) || "beleg"}/${Date.now()}_${sauber(file.name)}`;
+  const { error } = await supabase.storage.from("belege").upload(pfad, file, { contentType: file.type || undefined, upsert: false });
+  if (error) throw new Error("Datei konnte nicht gespeichert werden: " + error.message);
+  return pfad;
+}
+// zeitlich begrenzter Link zum Ansehen (10 Minuten)
+export async function dateiLink(pfad) {
+  const { data, error } = await supabase.storage.from("belege").createSignedUrl(pfad, 600);
+  if (error) throw error;
+  return data.signedUrl;
+}
+
+// Manuellen Beleg ersetzen (Kopf + alle Positionen), atomar
+export async function ersetzeBeleg(id, beleg, positionen) {
+  const { error } = await supabase.rpc("ersatzteil_beleg_ersetzen", {
+    p_id: id,
+    p_beleg: {
+      lieferant: beleg.lieferant, beleg_nr: beleg.belegNr, belegart: beleg.belegart, beleg_datum: beleg.belegDatum,
+      netto: beleg.netto, brutto: beleg.brutto, datei_pfad: beleg.dateiPfad || null, dateiname: beleg.dateiname || null, bemerkung: beleg.bemerkung || null,
+    },
+    p_positionen: positionen,
+  });
+  if (error) throw new Error(error.message);
 }

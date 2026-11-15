@@ -11,9 +11,10 @@
 // - Gutschriften sind negativ gespeichert, Summen verrechnen sie automatisch.
 
 import { useEffect, useMemo, useState } from "react";
-import { Upload, Loader2, Trash2, RefreshCw, CheckCircle2, AlertTriangle, Scissors, X, Plus } from "lucide-react";
+import { Upload, Loader2, Trash2, RefreshCw, CheckCircle2, AlertTriangle, Scissors, X, Plus, Paperclip, Pencil, FilePlus2 } from "lucide-react";
 import { parseWinklerPdf, KATEGORIEN } from "./winklerParser";
 import * as edb from "./ersatzteilDb";
+import BelegErfassen from "./BelegErfassen";
 
 const MARINE = "#0F2A43";
 const AMBER_DARK = "#8A5A10";
@@ -65,11 +66,24 @@ function Kpi({ label, value, sub, warn }) {
 
 function BelegBadge({ art }) {
   const gs = art === "gutschrift";
+  const ob = art === "ohne_beleg";
   return (
-    <span style={{ fontSize: 10.5, fontWeight: 600, padding: "2px 7px", borderRadius: 10, whiteSpace: "nowrap", background: gs ? "#F7D9CF" : "#E4ECF5", color: gs ? DANGER : MARINE }}>
-      {gs ? "Gutschrift" : "Rechnung"}
+    <span style={{ fontSize: 10.5, fontWeight: 600, padding: "2px 7px", borderRadius: 10, whiteSpace: "nowrap", background: gs ? "#F7D9CF" : ob ? "#EEF0F3" : "#E4ECF5", color: gs ? DANGER : ob ? TEXT_MUTED : MARINE }}>
+      {gs ? "Gutschrift" : ob ? "ohne Beleg" : "Rechnung"}
     </span>
   );
+}
+
+// Angehängte Datei (PDF/Foto) in neuem Tab öffnen - Link ist 10 Minuten gültig
+async function dateiOeffnen(pfad) {
+  const fenster = window.open("", "_blank");
+  try {
+    const url = await edb.dateiLink(pfad);
+    if (fenster) fenster.location.href = url; else window.location.href = url;
+  } catch (e) {
+    if (fenster) fenster.close();
+    alert("Datei konnte nicht geöffnet werden: " + (e.message || e));
+  }
 }
 
 const card = { background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 20, marginBottom: 20 };
@@ -181,6 +195,8 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
   const [importiere, setImportiere] = useState(false);
   const [meldung, setMeldung] = useState(null);
   const [zeigeBelege, setZeigeBelege] = useState(false);
+  const [lieferantenStamm, setLieferantenStamm] = useState([]);
+  const [formBeleg, setFormBeleg] = useState(null); // null | "neu" | Beleg (bearbeiten)
   const [aufteilenPos, setAufteilenPos] = useState(null);
   const [speichert, setSpeichert] = useState(null); // id der gerade gespeicherten Zeile
 
@@ -188,12 +204,13 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
     setLaden(true);
     setFehler("");
     try {
-      const [d, b, fm] = await Promise.all([edb.fetchPositionen(), edb.fetchBelege(), edb.fetchFinMap()]);
+      const [d, b, fm, lf] = await Promise.all([edb.fetchPositionen(), edb.fetchBelege(), edb.fetchFinMap(), edb.fetchLieferanten().catch(() => [])]);
       setDaten(d);
       setBelege(b);
       setFinMap(fm);
+      setLieferantenStamm(lf);
     } catch (e) {
-      setFehler("Ersatzteile konnten nicht geladen werden: " + (e.message || e));
+      setFehler("Werkstatt & Teile konnte nicht geladen werden: " + (e.message || e));
     }
     setLaden(false);
   }
@@ -213,7 +230,7 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
         const parsed = await parseWinklerPdf(file, fleetPlates, finMap);
         const key = `${parsed.lieferant}|${parsed.belegNr}`;
         const doppelt = out.some((o) => o.parsed && `${o.parsed.lieferant}|${o.parsed.belegNr}` === key);
-        out.push({ dateiname: file.name, parsed, schonDa: bekannte.has(key) || doppelt });
+        out.push({ dateiname: file.name, file, parsed, schonDa: bekannte.has(key) || doppelt });
       } catch (err) {
         out.push({ dateiname: file.name, fehler: err.message || String(err) });
       }
@@ -231,7 +248,10 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
     const fehlerListe = [];
     for (const v of importierbar) {
       try {
-        pos += await edb.importBeleg(v.parsed);
+        // PDF mit ablegen (bei Fehler trotzdem importieren, nur ohne Datei)
+        let dateiPfad = null;
+        try { dateiPfad = await edb.uploadDatei(v.file, v.parsed.lieferant); } catch { dateiPfad = null; }
+        pos += await edb.importBeleg({ ...v.parsed, dateiPfad });
         offen += v.parsed.positionen.filter((p) => !p.lkw).length;
         n++;
       } catch (err) {
@@ -246,6 +266,13 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
     });
     if (offen) setF((x) => ({ ...x, lkw: OFFEN }));
     neuLaden();
+  }
+
+  function belegBearbeiten(belegId) {
+    const b = belege.find((x) => x.id === belegId);
+    if (!b) return;
+    const positionen = daten.filter((t) => t.belegId === belegId).sort((x, y) => x.pos - y.pos || x.teil - y.teil);
+    setFormBeleg({ ...b, positionen });
   }
 
   async function belegLoeschen(b) {
@@ -334,7 +361,14 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
     <div>
       {/* ---------------- Upload ---------------- */}
       <div style={{ ...card, maxWidth: 860 }}>
-        <div style={h2}>Rechnungen & Gutschriften hochladen (Winkler)</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+          <div style={h2}>Belege erfassen</div>
+          <button className="primary" onClick={() => setFormBeleg("neu")}><FilePlus2 size={15} /> Beleg manuell erfassen</button>
+        </div>
+        <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 10 }}>
+          <b>Manuell</b> für Werkstätten, andere Teilehändler, TÜV/AU und Käufe ohne Beleg – mit Teilen und Arbeitslohn getrennt, PDF/Foto anhängbar.
+        </div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: TEXT, marginBottom: 4 }}>Winkler: Rechnungen & Gutschriften als PDF hochladen</div>
         <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 14 }}>
           Eine oder mehrere PDFs auf einmal auswählen. Die Positionen werden direkt aus dem Text gelesen (keine KI) und gegen „Summe Positionen“
           geprüft. Das Fahrzeug kommt aus den Bestell-Daten bzw. der Fahrgestellnummer auf dem Beleg – fehlt es, ordnest du die Position danach
@@ -467,15 +501,15 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
       </div>
 
       {laden ? (
-        <div style={{ padding: 30, color: TEXT_MUTED, display: "flex", gap: 8, alignItems: "center" }}><Loader2 size={16} /> Lade Ersatzteile …</div>
+        <div style={{ padding: 30, color: TEXT_MUTED, display: "flex", gap: 8, alignItems: "center" }}><Loader2 size={16} /> Lade Werkstatt & Teile …</div>
       ) : (
         <>
           {/* ---------------- Kennzahlen ---------------- */}
           <div className="et-kpi-grid" style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12, marginBottom: 20 }}>
             <Kpi label={f.lkw === "ALLE" ? "Kosten gesamt netto" : `Kosten netto · ${f.lkw === OFFEN ? "ohne Fahrzeug" : f.lkw}`} value={euro(gesamt.summe)} sub={`${gesamt.belege.size} Belege · Gutschriften verrechnet`} />
-            <Kpi label="Ersatzteile" value={euro(gesamt.kat.Ersatzteil)} />
-            <Kpi label="Ausrüstung" value={euro(gesamt.kat["Ausrüstung"])} sub="Feuerlöscher, ADR-Koffer, Handschuhe …" />
-            <Kpi label="Werkstatt & Betriebsstoffe" value={euro((gesamt.kat.Werkstattbedarf || 0) + (gesamt.kat.Betriebsstoff || 0))} />
+            <Kpi label="Ersatzteile" value={euro(gesamt.kat.Ersatzteil || 0)} sub={gesamt.kat.Reifen ? `+ Reifen ${euro(gesamt.kat.Reifen)}` : null} />
+            <Kpi label="Werkstatt, Wartung, Prüfung" value={euro((gesamt.kat["Werkstatt (Lohn)"] || 0) + (gesamt.kat["Wartung/Service"] || 0) + (gesamt.kat["Prüfung (HU/SP/AU)"] || 0))} sub="Fremdleistungen" />
+            <Kpi label="Ausrüstung & Material" value={euro((gesamt.kat["Ausrüstung"] || 0) + (gesamt.kat.Werkstattbedarf || 0) + (gesamt.kat.Betriebsstoff || 0))} sub="Ausrüstung, Werkstattbedarf, Betriebsstoffe" />
             <Kpi label="Gutschriften" value={euro(gesamt.gs)} sub="Rückgaben, Kulanz, Pfand" />
             <Kpi label="Ohne Fahrzeug" value={gesamt.offenN} sub={gesamt.offenN ? euro(gesamt.offenE) : "alles zugeordnet"} warn={gesamt.offenN > 0} />
           </div>
@@ -503,7 +537,7 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
                       <td className="mono" style={{ ...right, color: TEXT_MUTED }}>{tabSumme.gesamt ? `${Math.round((z.gesamt / tabSumme.gesamt) * 100)} %` : "–"}</td>
                     </tr>
                   ))}
-                  {lkwZeilen.length === 0 && <tr><td colSpan={KATEGORIEN.length + 5} style={{ color: TEXT_MUTED }}>Keine Ersatzteile im gewählten Zeitraum.</td></tr>}
+                  {lkwZeilen.length === 0 && <tr><td colSpan={KATEGORIEN.length + 5} style={{ color: TEXT_MUTED }}>Keine Einträge im gewählten Zeitraum.</td></tr>}
                   {lkwZeilen.length > 0 && (
                     <tr style={{ borderTop: `2px solid ${BORDER}` }}>
                       <td style={{ fontWeight: 600 }}>Summe</td>
@@ -543,8 +577,13 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
                       <tr key={t.id} style={gs ? { background: GS_BG } : undefined}>
                         <td className="mono" style={{ whiteSpace: "nowrap" }}>{dmy(t.datum)}</td>
                         <td style={{ whiteSpace: "nowrap" }}>
-                          <div className="mono" style={{ fontSize: 12.5 }}>{t.belegNr} <span style={{ color: TEXT_MUTED }}>/{t.pos}</span></div>
-                          <div style={{ marginTop: 2 }}><BelegBadge art={t.belegart} /></div>
+                          <div className="mono" style={{ fontSize: 12.5 }}>{t.belegart === "ohne_beleg" ? "–" : t.belegNr} <span style={{ color: TEXT_MUTED }}>/{t.pos}</span></div>
+                          <div style={{ fontSize: 11, color: TEXT_MUTED }}>{t.lieferant}</div>
+                          <div style={{ marginTop: 2, display: "flex", gap: 4, alignItems: "center" }}>
+                            <BelegBadge art={t.belegart} />
+                            {t.dateiPfad && <button className="ghost" title="Beleg ansehen" onClick={() => dateiOeffnen(t.dateiPfad)} style={{ padding: "1px 5px" }}><Paperclip size={12} /></button>}
+                            {t.quelle === "manuell" && <button className="ghost" title="Beleg bearbeiten" onClick={() => belegBearbeiten(t.belegId)} style={{ padding: "1px 5px" }}><Pencil size={12} /></button>}
+                          </div>
                         </td>
                         <td style={{ whiteSpace: "nowrap", minWidth: 160 }}>
                           <select value={t.lkw} disabled={speichert === t.id} onChange={(e) => aendern(t, { lkw: e.target.value })}
@@ -566,6 +605,7 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
                         <td className="mono" style={{ fontSize: 12, whiteSpace: "nowrap" }}>{t.artikelNr}</td>
                         <td style={{ minWidth: 200 }}>
                           <div>{t.bezeichnung}</div>
+                          {(t.anlass || t.kmStand) && <div style={{ fontSize: 11, color: MARINE }}>{[t.anlass, t.kmStand ? `${t.kmStand.toLocaleString("de-DE")} km` : ""].filter(Boolean).join(" · ")}</div>}
                           {t.zusatz && <div style={{ fontSize: 11, color: TEXT_MUTED }}>{t.zusatz}</div>}
                         </td>
                         <td className="mono" style={{ ...right, whiteSpace: "nowrap" }}>{mengeTxt(t.menge)} {t.einheit}</td>
@@ -602,9 +642,15 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
                         <td className="mono">{dmy(b.datum)}</td>
                         <td className="mono" style={right}>{euro(b.netto)}</td>
                         <td className="mono" style={right}>{euro(b.brutto)}</td>
-                        <td style={{ fontSize: 12, color: TEXT_MUTED }}>{b.dateiname}</td>
+                        <td style={{ fontSize: 12, color: TEXT_MUTED }}>
+                          {b.dateiPfad ? <button className="ghost" onClick={() => dateiOeffnen(b.dateiPfad)} style={{ padding: "2px 7px", fontSize: 11.5 }}><Paperclip size={11} /> {b.dateiname || "ansehen"}</button> : b.dateiname}
+                          {b.quelle === "manuell" && <span style={{ marginLeft: 6, fontSize: 10.5, background: "#EEF0F3", padding: "1px 6px", borderRadius: 8 }}>manuell</span>}
+                        </td>
                         <td className="mono" style={{ fontSize: 12, color: TEXT_MUTED }}>{b.importiertAm ? dmy(b.importiertAm.slice(0, 10)) : ""}</td>
-                        <td><button className="ghost" title="Beleg löschen" onClick={() => belegLoeschen(b)} style={{ padding: "4px 8px" }}><Trash2 size={13} /></button></td>
+                        <td style={{ whiteSpace: "nowrap" }}>
+                          {b.quelle === "manuell" && <button className="ghost" title="Beleg bearbeiten" onClick={() => belegBearbeiten(b.id)} style={{ padding: "4px 8px", marginRight: 4 }}><Pencil size={13} /></button>}
+                          <button className="ghost" title="Beleg löschen" onClick={() => belegLoeschen(b)} style={{ padding: "4px 8px" }}><Trash2 size={13} /></button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -613,6 +659,12 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
             )}
           </div>
         </>
+      )}
+
+      {formBeleg && (
+        <BelegErfassen lkwOptionen={lkwOptionen} lieferanten={lieferantenStamm} beleg={formBeleg === "neu" ? null : formBeleg}
+          onClose={() => setFormBeleg(null)}
+          onSaved={() => { setFormBeleg(null); setMeldung({ ok: true, text: "Beleg gespeichert." }); neuLaden(); }} />
       )}
 
       {aufteilenPos && (

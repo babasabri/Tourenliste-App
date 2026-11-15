@@ -45,7 +45,7 @@ const REITER = [
   { id: "uebersicht", label: "Übersicht", icon: LayoutGrid },
   { id: "tanken", label: "Tankvorgänge", icon: Fuel },
   { id: "maut", label: "Maut", icon: Coins },
-  { id: "ersatzteile", label: "Ersatzteile", icon: Wrench },
+  { id: "ersatzteile", label: "Werkstatt & Teile", icon: Wrench },
   { id: "leasing", label: "Leasing/Miete", icon: KeyRound },
   { id: "abgaben", label: "Versicherung & Steuer", icon: ShieldCheck },
   { id: "fahrer", label: "Fahrerkosten", icon: Users },
@@ -329,11 +329,11 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
           )}
 
           <div className="fp-kpi-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginBottom: 20 }}>
-            <Kpi label="Fahrzeugkosten gesamt" value={euro(sum.kosten)} sub="Diesel, AdBlue, Tank-Nebenk., Maut, Ersatzteile, Leasing/Miete, Versicherung, Steuer, Fahrer" />
+            <Kpi label="Fahrzeugkosten gesamt" value={euro(sum.kosten)} sub="Diesel, AdBlue, Tank-Nebenk., Maut, Werkstatt & Teile, Leasing/Miete, Versicherung, Steuer, Fahrer" />
             <Kpi label="Kosten pro km" value={proKm(sum.kosten, sum.km) ? `${dez(proKm(sum.kosten, sum.km))} €` : "–"} sub={`${kmTxt(sum.km)} km lt. Einsatzplan`} />
             <Kpi label="Umsatz" value={euro(sum.umsatz)} sub={`${sum.touren.toLocaleString("de-DE")} Touren · ${proKm(sum.umsatz, sum.km) ? dez(proKm(sum.umsatz, sum.km)) + " €/km" : "–"}`} />
             <Kpi label="Umsatz − Fahrzeugkosten" value={euro(sum.umsatz - sum.kosten)} accent={sum.umsatz - sum.kosten >= 0 ? SUCCESS : DANGER}
-              sub={sum.umsatz ? `${Math.round(((sum.umsatz - sum.kosten) / sum.umsatz) * 100)} % vom Umsatz · ohne Werkstattlohn und Gemeinkosten` : null} />
+              sub={sum.umsatz ? `${Math.round(((sum.umsatz - sum.kosten) / sum.umsatz) * 100)} % vom Umsatz · ohne Gemeinkosten` : null} />
             <Kpi label="Anteile der Kosten" value={sum.kosten ? `${Math.round((sum.diesel / sum.kosten) * 100)} % Diesel` : "–"}
               sub={sum.kosten ? `Maut ${Math.round((sum.maut / sum.kosten) * 100)} % · Leasing/Miete ${Math.round((sum.leasing / sum.kosten) * 100)} % · Teile ${Math.round((sum.teile / sum.kosten) * 100)} %` : null} />
           </div>
@@ -345,7 +345,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
                 <thead>
                   <tr>
                     <th>LKW</th><th style={right}>km</th><th style={right}>Umsatz</th><th style={right}>Umsatz/km</th>
-                    <th style={right}>Diesel + AdBlue</th><th style={right}>Tank-Nebenk.</th><th style={right}>Maut</th><th style={right}>Ersatzteile</th>
+                    <th style={right}>Diesel + AdBlue</th><th style={right}>Tank-Nebenk.</th><th style={right}>Maut</th><th style={right}>Werkstatt & Teile</th>
                     <th style={right}>Leasing/Miete</th><th style={right} title="Kfz-Versicherung und Kfz-Steuer, tagesgenau verteilt">Versich. + Steuer</th><th style={right} title="Fahrerkosten, über den Einsatzplan auf die LKW verteilt">Fahrer</th>
                     <th style={right}>Kosten gesamt</th><th style={right}>Kosten/km</th><th style={right}>Umsatz − Kosten</th>
                   </tr>
@@ -411,11 +411,11 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
             </div>
             <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginTop: 10, lineHeight: 1.5 }}>
               Alle Beträge netto. km aus dem Einsatzplan (Wochen anteilig nach Tagen, unplausible Wochen ausgelassen). Umsatz = Summe der Touren
-              (Fracht, FD, ADR, Multistop, Wartezeit, Maut, Diesel). Ersatzteile nach Belegdatum, Gutschriften verrechnet. Leasing/Miete: Monatsrate, angeschnittene Monate anteilig nach Tagen; Auflieger mit festem LKW zählen bei diesem LKW. Versicherung und Kfz-Steuer tagesgenau über ihren Zeitraum verteilt. Fahrerkosten über den Einsatzplan auf die LKW verteilt.
+              (Fracht, FD, ADR, Multistop, Wartezeit, Maut, Diesel). Werkstatt & Teile nach Belegdatum (Teile, Werkstattlohn, Reifen, Wartung, Prüfungen), Gutschriften verrechnet. Leasing/Miete: Monatsrate, angeschnittene Monate anteilig nach Tagen; Auflieger mit festem LKW zählen bei diesem LKW. Versicherung und Kfz-Steuer tagesgenau über ihren Zeitraum verteilt. Fahrerkosten über den Einsatzplan auf die LKW verteilt.
               {(auswertung.lager !== 0 || auswertung.offen !== 0) && (
-                <> Nicht enthalten: Ersatzteile „Lager“ {euro(auswertung.lager)}{auswertung.offen !== 0 && <>, ohne Fahrzeug {euro(auswertung.offen)}</>}.</>
+                <> Nicht enthalten: Werkstatt & Teile „Lager“ {euro(auswertung.lager)}{auswertung.offen !== 0 && <>, ohne Fahrzeug {euro(auswertung.offen)}</>}.</>
               )}
-              {auswertung.fahrerOffen > 0.5 && <> Fahrerkosten ohne LKW-Zuordnung im Einsatzplan: {euro(auswertung.fahrerOffen)} (nicht enthalten).</>}{auswertung.verwaltung > 0.5 && <> Personalkosten Verwaltung/Büro (nicht gefahrene Tage von GF, Fuhrparkleiter, Büro): {euro(auswertung.verwaltung)} (nicht enthalten).</>}{" "}Nicht erfasst ist Werkstattlohn.
+              {auswertung.fahrerOffen > 0.5 && <> Fahrerkosten ohne LKW-Zuordnung im Einsatzplan: {euro(auswertung.fahrerOffen)} (nicht enthalten).</>}{auswertung.verwaltung > 0.5 && <> Personalkosten Verwaltung/Büro (nicht gefahrene Tage von GF, Fuhrparkleiter, Büro): {euro(auswertung.verwaltung)} (nicht enthalten).</>}
               {schlussraten.length > 0 && (
                 <div style={{ marginTop: 6, color: TEXT }}>
                   <b>Schlussraten im Zeitraum (nicht in den Kosten oben enthalten):</b>{" "}
@@ -434,7 +434,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
                   <thead>
                     <tr>
                       <th>Monat</th><th style={right}>km</th><th style={right}>Umsatz</th><th style={right}>Diesel + AdBlue</th><th style={right}>Tank-Nebenk.</th>
-                      <th style={right}>Maut</th><th style={right}>Ersatzteile</th><th style={right}>Leasing/Miete</th><th style={right}>Versich. + Steuer</th><th style={right}>Fahrer</th><th style={right}>Kosten gesamt</th><th style={right}>Kosten/km</th>
+                      <th style={right}>Maut</th><th style={right}>Werkstatt & Teile</th><th style={right}>Leasing/Miete</th><th style={right}>Versich. + Steuer</th><th style={right}>Fahrer</th><th style={right}>Kosten gesamt</th><th style={right}>Kosten/km</th>
                     </tr>
                   </thead>
                   <tbody>

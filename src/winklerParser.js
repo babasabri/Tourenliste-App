@@ -26,7 +26,8 @@
 import { loadPdfjs, extractLayoutLines } from "./gutschriftParser";
 
 export const LIEFERANT_WINKLER = "Winkler";
-export const KATEGORIEN = ["Ersatzteil", "Ausrüstung", "Werkstattbedarf", "Betriebsstoff"];
+// Kategorien für "Werkstatt & Teile" (Winkler-Import und manuelle Erfassung)
+export const KATEGORIEN = ["Ersatzteil", "Werkstatt (Lohn)", "Reifen", "Wartung/Service", "Prüfung (HU/SP/AU)", "Ausrüstung", "Werkstattbedarf", "Betriebsstoff"];
 
 function zahl(s) {
   const n = parseFloat(String(s).trim().replace(/\./g, "").replace(",", "."));
