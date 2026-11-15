@@ -193,8 +193,8 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
     const km = kmJeLkw(wochenKm, start, ende);
     for (const [lkw, k] of Object.entries(km)) z(lkw).km += k;
     // Auflieger (Leasing/Miete mit Fahrzeugart "Auflieger") gesammelt in einer Zeile
-    const aufl = new Set(vertraege.filter((v) => v.typ === "Auflieger").map((v) => v.kennzeichen));
-    for (const [lkw, b] of Object.entries(ldb.leasingJeLkw(raten, start, ende))) z(aufl.has(lkw) ? AUFLIEGER : lkw).leasing += b;
+    // Auflieger mit festem LKW zählen dort mit (ab "seit"), sonst in der Sammelzeile
+    for (const [ziel, b] of Object.entries(ldb.leasingJeZiel(raten, vertraege, start, ende, AUFLIEGER))) z(ziel).leasing += b;
     for (const [lkw, b] of Object.entries(adb.abgabenJeLkw(abgaben, start, ende))) z(lkw).versSteuer += b.versicherung + b.steuer;
     let fahrerOffen = 0, verwaltung = 0;
     for (const [lkw, b] of Object.entries(fdb.jeLkw(fahrerKosten, wochenKm, start, ende, { touren: tours, rollen, abwesenheiten: abw }))) {
@@ -223,9 +223,9 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
     for (const e of teile) if (drin(e.datum) && e.lkw && e.lkw !== "Lager" && lkwOk(e.lkw)) m(e.datum).teile += e.netto + e.pfand;
     for (const t of tours || []) if (drin(t.datum) && lkwOk(t.lkw)) m(t.datum).umsatz += umsatzVon(t);
     for (const r of raten) {
-      if (!lkwOk(r.kennzeichen)) continue;
-      const anteil = ldb.leasingJeLkw([r], start, ende)[r.kennzeichen];
-      if (anteil) m(`${r.monat}-01`).leasing += anteil;
+      for (const [ziel, anteil] of Object.entries(ldb.leasingJeZiel([r], vertraege, start, ende, AUFLIEGER))) {
+        if (lkwOk(ziel) && anteil) m(`${r.monat}-01`).leasing += anteil;
+      }
     }
     for (const a of fdb.verteilen(fahrerKosten, wochenKm, start, ende, { touren: tours, rollen, abwesenheiten: abw })) {
       if (a.lkw === fdb.OFFEN || a.lkw === fdb.VERWALTUNG || !lkwOk(a.lkw) || !a.betrag) continue;
@@ -253,7 +253,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
       const r = map[k];
       return { monat: `${MONATE[mo - 1]} ${j}`, ...r, kosten: r.diesel + r.neben + r.maut + r.teile + r.leasing + r.versSteuer + r.fahrer, km };
     });
-  }, [tank, maut, teile, raten, abgaben, fahrerKosten, rollen, abw, tours, wochenKm, start, ende, f.lkw]);
+  }, [tank, maut, teile, raten, vertraege, abgaben, fahrerKosten, rollen, abw, tours, wochenKm, start, ende, f.lkw]);
 
   const jahre = useMemo(() => {
     const s = new Set([...tank, ...maut].map((t) => (t.datum || "").slice(0, 4)).filter(Boolean));
@@ -359,7 +359,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
                         <td className="mono" style={{ fontWeight: 600, whiteSpace: "nowrap" }}>
                           {r.lkw}
                           {r.lkw === AUFLIEGER
-                            ? <div style={{ fontSize: 10.5, color: TEXT_MUTED, fontWeight: 400, fontFamily: "inherit" }}>alle, ohne LKW-Zuordnung</div>
+                            ? <div style={{ fontSize: 10.5, color: TEXT_MUTED, fontWeight: 400, fontFamily: "inherit" }}>ohne festen LKW</div>
                             : !fleetPlates.includes(r.lkw) && <div style={{ fontSize: 10.5, color: TEXT_MUTED, fontWeight: 400 }}>nicht im Fuhrpark</div>}
                         </td>
                         <td className="mono" style={right}>{kmTxt(r.km)}</td>
@@ -411,7 +411,7 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
             </div>
             <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginTop: 10, lineHeight: 1.5 }}>
               Alle Beträge netto. km aus dem Einsatzplan (Wochen anteilig nach Tagen, unplausible Wochen ausgelassen). Umsatz = Summe der Touren
-              (Fracht, FD, ADR, Multistop, Wartezeit, Maut, Diesel). Ersatzteile nach Belegdatum, Gutschriften verrechnet. Leasing/Miete: Monatsrate, angeschnittene Monate anteilig nach Tagen. Versicherung und Kfz-Steuer tagesgenau über ihren Zeitraum verteilt. Fahrerkosten über den Einsatzplan auf die LKW verteilt.
+              (Fracht, FD, ADR, Multistop, Wartezeit, Maut, Diesel). Ersatzteile nach Belegdatum, Gutschriften verrechnet. Leasing/Miete: Monatsrate, angeschnittene Monate anteilig nach Tagen; Auflieger mit festem LKW zählen bei diesem LKW. Versicherung und Kfz-Steuer tagesgenau über ihren Zeitraum verteilt. Fahrerkosten über den Einsatzplan auf die LKW verteilt.
               {(auswertung.lager !== 0 || auswertung.offen !== 0) && (
                 <> Nicht enthalten: Ersatzteile „Lager“ {euro(auswertung.lager)}{auswertung.offen !== 0 && <>, ohne Fahrzeug {euro(auswertung.offen)}</>}.</>
               )}

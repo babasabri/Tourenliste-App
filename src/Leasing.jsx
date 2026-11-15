@@ -212,7 +212,7 @@ export default function Leasing() {
                     <div className="mono" style={{ fontWeight: 600 }}>{f.kennzeichen}</div>
                     <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                       <Badge art={f.art} />
-                      {f.typ === "Auflieger" && <span style={{ fontSize: 10.5, fontWeight: 600, padding: "2px 7px", borderRadius: 10, background: "#EEF0F3", color: TEXT_MUTED }}>Auflieger</span>}
+                      {f.typ === "Auflieger" && <span style={{ fontSize: 10.5, fontWeight: 600, padding: "2px 7px", borderRadius: 10, background: "#EEF0F3", color: TEXT_MUTED }}>Auflieger{f.zugeordnetLkw ? ` · ${f.zugeordnetLkw}` : ""}</span>}
                     </div>
                     {f.abbezahltAm && <div style={{ fontSize: 10.5, color: TEXT_MUTED, marginTop: 2 }}>{f.art === "Miete" ? "zurück" : "abbezahlt"} {dmy(f.abbezahltAm)}</div>}
                   </td>
@@ -259,7 +259,7 @@ export default function Leasing() {
           <table>
             <thead>
               <tr>
-                <th>Kennzeichen</th><th>Fahrzeug</th><th>Art</th><th>Leasinggeber / Vermieter</th><th>Vertrags-Nr.</th>
+                <th>Kennzeichen</th><th>Fahrzeug</th><th title="Auflieger: fester LKW (Kosten zählen in der Fuhrpark-Übersicht bei diesem LKW), optional ab Datum">fest bei LKW · seit</th><th>Art</th><th>Leasinggeber / Vermieter</th><th>Vertrags-Nr.</th>
                 <th title="Leasing/Eigentum: abbezahlt am · Miete: zurückgegeben am – danach keine Rate mehr">abbezahlt / zurück am</th><th>Schlussrate am</th><th style={right}>Schlussrate netto</th>
                 <th>Bemerkung</th><th style={right}>Raten erfasst</th><th></th>
               </tr>
@@ -273,6 +273,20 @@ export default function Leasing() {
                       <option>LKW</option>
                       <option>Auflieger</option>
                     </select>
+                  </td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    {f.typ === "Auflieger" ? (
+                      <>
+                        <select value={f.zugeordnetLkw} onChange={(e) => fahrzeugAendern(f.kennzeichen, { zugeordnetLkw: e.target.value })} style={{ width: 120 }}>
+                          <option value="">– keiner –</option>
+                          {fahrzeuge.filter((x) => x.typ !== "Auflieger").map((x) => <option key={x.kennzeichen} value={x.kennzeichen}>{x.kennzeichen}</option>)}
+                        </select>
+                        {f.zugeordnetLkw && (
+                          <input type="date" value={f.zugeordnetSeit} title="seit (leer = gesamter Zeitraum)" onChange={(e) => fahrzeugAendern(f.kennzeichen, { zugeordnetSeit: e.target.value })}
+                            style={{ width: 132, marginLeft: 6 }} />
+                        )}
+                      </>
+                    ) : <span style={{ color: TEXT_MUTED }}>–</span>}
                   </td>
                   <td>
                     <select value={f.art} onChange={(e) => fahrzeugAendern(f.kennzeichen, { art: e.target.value })} style={{ width: 170 }}>

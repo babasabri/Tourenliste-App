@@ -15,6 +15,8 @@ export async function fetchFahrzeuge() {
     reihenfolge: r.reihenfolge,
     abbezahltAm: r.abbezahlt_am || "", // bei Miete: zurückgegeben am
     typ: r.typ || "LKW",
+    zugeordnetLkw: r.zugeordnet_lkw || "",   // Auflieger: fest bei diesem LKW
+    zugeordnetSeit: r.zugeordnet_seit || "", // ab wann (leer = immer)
     schlussrateDatum: r.schlussrate_datum || "",
     schlussrateBetrag: r.schlussrate_betrag === null || r.schlussrate_betrag === undefined ? null : Number(r.schlussrate_betrag),
   }));
@@ -33,6 +35,8 @@ export async function updateFahrzeug(kennzeichen, patch) {
   if (patch.bemerkung !== undefined) p.bemerkung = patch.bemerkung || null;
   if (patch.abbezahltAm !== undefined) p.abbezahlt_am = patch.abbezahltAm || null;
   if (patch.typ !== undefined) p.typ = patch.typ;
+  if (patch.zugeordnetLkw !== undefined) p.zugeordnet_lkw = patch.zugeordnetLkw || null;
+  if (patch.zugeordnetSeit !== undefined) p.zugeordnet_seit = patch.zugeordnetSeit || null;
   if (patch.schlussrateDatum !== undefined) p.schlussrate_datum = patch.schlussrateDatum || null;
   if (patch.schlussrateBetrag !== undefined) p.schlussrate_betrag = patch.schlussrateBetrag;
   const { error } = await supabase.from("leasing_fahrzeuge").update(p).eq("kennzeichen", kennzeichen);
@@ -101,4 +105,26 @@ export function leasingJeLkw(raten, start, ende) {
 // Monat (YYYY-MM) liegt nach dem Abbezahlt-Monat -> keine Rate mehr erwartet
 export function nachAbbezahlt(fahrzeug, monat) {
   return !!(fahrzeug && fahrzeug.abbezahltAm && monat > fahrzeug.abbezahltAm.slice(0, 7));
+}
+
+// Leasing/Miete je Ziel für [start, ende]: Auflieger mit festem LKW zählen ab
+// "zugeordnetSeit" beim LKW, davor (und ohne Zuordnung) unter sammelKey.
+// -> { ziel: betrag }
+export function leasingJeZiel(raten, fahrzeuge, start, ende, sammelKey) {
+  const fz = Object.fromEntries((fahrzeuge || []).map((f) => [f.kennzeichen, f]));
+  const out = {};
+  const add = (k, b) => { if (b) out[k] = (out[k] || 0) + b; };
+  const vortag = (iso) => { const [y, m, d] = iso.split("-").map(Number); const x = new Date(y, m - 1, d - 1); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+  for (const r of raten) {
+    const f = fz[r.kennzeichen];
+    if (!f || f.typ !== "Auflieger") { add(r.kennzeichen, leasingJeLkw([r], start, ende)[r.kennzeichen]); continue; }
+    if (!f.zugeordnetLkw) { add(sammelKey, leasingJeLkw([r], start, ende)[r.kennzeichen]); continue; }
+    const seit = f.zugeordnetSeit;
+    if (!seit) { add(f.zugeordnetLkw, leasingJeLkw([r], start, ende)[r.kennzeichen]); continue; }
+    const vorEnde = ende && ende < vortag(seit) ? ende : vortag(seit);
+    if (!start || start <= vorEnde) add(sammelKey, leasingJeLkw([r], start, vorEnde)[r.kennzeichen]);
+    const abStart = start && start > seit ? start : seit;
+    if (!ende || abStart <= ende) add(f.zugeordnetLkw, leasingJeLkw([r], abStart, ende)[r.kennzeichen]);
+  }
+  return out;
 }
