@@ -199,6 +199,7 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
   const [zeigeBelege, setZeigeBelege] = useState(false);
   const [lieferantenStamm, setLieferantenStamm] = useState([]);
   const [formBeleg, setFormBeleg] = useState(null); // null | "neu" | Beleg (bearbeiten)
+  const [formVorlage, setFormVorlage] = useState(null); // aus PDF ohne Leser vorausgefüllt
   const [aufteilenPos, setAufteilenPos] = useState(null);
   const [speichert, setSpeichert] = useState(null); // id der gerade gespeicherten Zeile
 
@@ -259,16 +260,19 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
     const out = [];
     for (const file of files) {
       try {
-        const parsed = await parseBelegPdf(file, fleetPlates, finMap);
+        const parsed = await parseBelegPdf(file, fleetPlates, finMap, lieferantenStamm);
         const key = `${parsed.lieferant}|${parsed.belegNr}`;
         const doppelt = out.some((o) => o.parsed && `${o.parsed.lieferant}|${o.parsed.belegNr}` === key);
         const vorhanden = bekannte.get(key);
         out.push({ dateiname: file.name, file, parsed, schonDa: !!vorhanden || doppelt, anhaengenAn: vorhanden && !vorhanden.dateiPfad && !doppelt ? vorhanden.id : null });
       } catch (err) {
-        out.push({ dateiname: file.name, fehler: err.message || String(err) });
+        const vorlage = err.vorlage || null;
+        const vorhanden = vorlage?.lieferant && vorlage?.belegNr ? bekannte.get(`${vorlage.lieferant}|${vorlage.belegNr}`) : null;
+        if (vorhanden) out.push({ dateiname: file.name, file, vorlage, schonDa: true, anhaengenAn: vorhanden.dateiPfad ? null : vorhanden.id, lieferantDatei: vorhanden.lieferant, belegNrAnz: vorhanden.belegNr });
+        else out.push({ dateiname: file.name, file, vorlage, fehler: err.message || String(err) });
       }
     }
-    out.sort((a, b) => String(a.parsed?.belegDatum || "").localeCompare(String(b.parsed?.belegDatum || "")));
+    out.sort((a, b) => String(a.parsed?.belegDatum || a.vorlage?.datum || "").localeCompare(String(b.parsed?.belegDatum || b.vorlage?.datum || "")));
     setVorschau(out);
     setParsing(false);
   }
@@ -282,8 +286,8 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
     const fehlerListe = [];
     let angehaengt = 0;
     for (const v of anzuhaengen) {
-      try { await edb.dateiAnhaengen(v.anhaengenAn, v.file, v.parsed.lieferant); angehaengt++; }
-      catch (err) { fehlerListe.push(`${v.parsed.belegNr} (PDF anhängen): ${err.message}`); }
+      try { await edb.dateiAnhaengen(v.anhaengenAn, v.file, v.parsed?.lieferant || v.lieferantDatei); angehaengt++; }
+      catch (err) { fehlerListe.push(`${v.parsed?.belegNr || v.belegNrAnz} (PDF anhängen): ${err.message}`); }
     }
     for (const v of importierbar) {
       try {
@@ -445,7 +449,15 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
                     const lkws = p ? Array.from(new Set(p.positionen.map((x) => x.lkw).filter(Boolean))) : [];
                     const offen = p ? p.positionen.filter((x) => !x.lkw).length : 0;
                     let status;
-                    if (v.fehler) status = <span style={{ color: DANGER }}>{v.fehler}</span>;
+                    if (v.fehler && v.vorlage) status = (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ color: AMBER_DARK }}>{v.fehler}</span>
+                        <button className="primary" style={{ padding: "3px 10px", fontSize: 12 }} onClick={() => setFormVorlage({ ...v.vorlage, file: v.file, zeile: i })}>
+                          <Pencil size={12} /> Manuell erfassen
+                        </button>
+                      </span>
+                    );
+                    else if (v.fehler) status = <span style={{ color: DANGER }}>{v.fehler}</span>;
                     else if (v.anhaengenAn) status = <span style={{ color: SUCCESS }}><Paperclip size={13} style={{ verticalAlign: -2 }} /> schon erfasst – PDF wird angehängt</span>;
                     else if (v.schonDa) status = <span style={{ color: TEXT_MUTED }}>schon importiert – wird übersprungen</span>;
                     else if (p.summenAbweichung) status = <span style={{ color: DANGER }}><AlertTriangle size={13} /> Summe passt nicht ({euro(p.parsedSumme)} statt {euro(p.dokumentSumme)}) – wird nicht übernommen</span>;
@@ -453,14 +465,14 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
                     return (
                       <tr key={i} style={p?.belegart === "gutschrift" ? { background: GS_BG } : undefined}>
                         <td style={{ fontSize: 12 }}>{v.dateiname}</td>
-                        <td style={{ fontSize: 12 }}>{p?.lieferant || "–"}</td>
+                        <td style={{ fontSize: 12 }}>{p?.lieferant || v.vorlage?.lieferant || v.lieferantDatei || "–"}</td>
                         <td>{p ? <BelegBadge art={p.belegart} /> : "–"}</td>
-                        <td className="mono">{p?.belegNr || "–"}</td>
-                        <td className="mono">{p ? dmy(p.belegDatum) : "–"}</td>
+                        <td className="mono">{p?.belegNr || v.vorlage?.belegNr || v.belegNrAnz || "–"}</td>
+                        <td className="mono">{p ? dmy(p.belegDatum) : v.vorlage?.datum ? dmy(v.vorlage.datum) : "–"}</td>
                         <td className="mono" style={right}>{p ? p.positionen.length : "–"}</td>
-                        <td className="mono" style={right}>{p ? euro(p.netto) : "–"}</td>
+                        <td className="mono" style={right}>{p ? euro(p.netto) : v.vorlage?.netto != null ? euro(v.vorlage.netto) : "–"}</td>
                         <td style={{ fontSize: 12 }}>
-                          {lkws.join(", ")}
+                          {lkws.join(", ") || (!p && v.vorlage?.lkw) || ""}
                           {offen > 0 && <span style={{ color: AMBER_DARK }}>{lkws.length ? " · " : ""}{offen} offen</span>}
                         </td>
                         <td style={{ fontSize: 12.5 }}>{status}</td>
@@ -725,6 +737,18 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
         <BelegErfassen lkwOptionen={lkwOptionen} lieferanten={lieferantenStamm} beleg={formBeleg === "neu" ? null : formBeleg}
           onClose={() => setFormBeleg(null)}
           onSaved={() => { setFormBeleg(null); setMeldung({ ok: true, text: "Beleg gespeichert." }); neuLaden(); }} />
+      )}
+
+      {formVorlage && (
+        <BelegErfassen lkwOptionen={lkwOptionen} lieferanten={lieferantenStamm} beleg={null} vorlage={formVorlage}
+          onClose={() => setFormVorlage(null)}
+          onSaved={() => {
+            const z = formVorlage.zeile;
+            setFormVorlage(null);
+            setVorschau((vs) => vs.filter((_, j) => j !== z));
+            setMeldung({ ok: true, text: "Beleg gespeichert – PDF ist angehängt." });
+            neuLaden();
+          }} />
       )}
 
       {aufteilenPos && (

@@ -5,10 +5,11 @@ import { winklerAusZeilen } from "./winklerParser";
 import { istGoebel, parseGoebelLines, aufbereitenGoebel } from "./goebelParser";
 import { istTsb, parseTsbLines, aufbereitenTsb } from "./tsbParser";
 import { istEgs, parseEgsLines, aufbereitenEgs } from "./egsParser";
+import { belegVorschlag } from "./belegVorschlag";
 
 export const UNTERSTUETZT = "Winkler, Heinrich Göbel, TSB Darmstadt, EGS/KÜS";
 
-export function belegAusZeilen(lines, dateiname, fleetPlates, finMap) {
+export function belegAusZeilen(lines, dateiname, fleetPlates, finMap, lieferanten = []) {
   if (istGoebel(lines)) {
     const res = parseGoebelLines(lines);
     if (!res.belegNr || res.positionen.length === 0) throw new Error("Göbel-Beleg ohne Belegnummer oder ohne Positionen - Layout unbekannt.");
@@ -25,12 +26,16 @@ export function belegAusZeilen(lines, dateiname, fleetPlates, finMap) {
     return { dateiname, quelle: "egs_pdf", ...aufbereitenEgs(res, fleetPlates, finMap) };
   }
   if (lines.some((l) => /Winkler/i.test(l))) return winklerAusZeilen(lines, dateiname, fleetPlates, finMap);
-  if (lines.join("").replace(/\s/g, "").length < 50)
-    throw new Error("Eingescannte Rechnung (nur Bild, kein Text) – kann nicht automatisch gelesen werden. Bitte über „Beleg manuell erfassen“ eintragen und den Scan anhängen.");
-  throw new Error(`Für diesen Lieferanten gibt es noch keinen automatischen PDF-Leser (vorhanden: ${UNTERSTUETZT}). Bitte über „Beleg manuell erfassen“ eintragen – oder Claude eine Beispielrechnung schicken.`);
+  // Kein eigener Leser: Fehler mit Vorschlag fürs manuelle Formular
+  const scan = lines.join("").replace(/\s/g, "").length < 50;
+  const err = new Error(scan
+    ? "Eingescannt (nur Bild) – nicht automatisch lesbar."
+    : "Kein automatischer Leser für diesen Lieferanten.");
+  err.vorlage = scan ? { scan: true } : belegVorschlag(lines, fleetPlates, finMap, lieferanten);
+  throw err;
 }
 
-export async function parseBelegPdf(file, fleetPlates, finMap) {
+export async function parseBelegPdf(file, fleetPlates, finMap, lieferanten = []) {
   const pdfjsLib = await loadPdfjs();
   const buf = await file.arrayBuffer();
   let pdf;
@@ -40,5 +45,5 @@ export async function parseBelegPdf(file, fleetPlates, finMap) {
     throw new Error("PDF konnte nicht geöffnet werden - ist die Datei beschädigt oder passwortgeschützt?");
   }
   const lines = await extractLayoutLines(pdf);
-  return belegAusZeilen(lines, file.name, fleetPlates, finMap);
+  return belegAusZeilen(lines, file.name, fleetPlates, finMap, lieferanten);
 }

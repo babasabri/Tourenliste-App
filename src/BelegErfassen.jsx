@@ -34,26 +34,26 @@ function parseBetrag(s) {
 // Vorgabe-Kategorie je Lieferant (änderbar)
 const standardKategorie = (lieferant) => (/^EGS\b/i.test(lieferant || "") ? "Prüfung (HU/SP/AU)" : "Ersatzteil");
 
-export default function BelegErfassen({ lkwOptionen, lieferanten, beleg, onClose, onSaved }) {
+export default function BelegErfassen({ lkwOptionen, lieferanten, beleg, vorlage, onClose, onSaved }) {
   const bearbeiten = !!beleg;
   const vz = beleg?.belegart === "gutschrift" ? -1 : 1;
   const [k, setK] = useState(() => ({
-    lieferant: beleg?.lieferant || "",
-    belegart: beleg?.belegart || "rechnung",
-    belegNr: beleg?.belegart === "ohne_beleg" ? "" : beleg?.belegNr || "",
-    datum: beleg?.datum || heute(),
-    lkw: beleg?.positionen?.[0]?.lkw || "",
+    lieferant: beleg?.lieferant || vorlage?.lieferant || "",
+    belegart: beleg?.belegart || vorlage?.belegart || "rechnung",
+    belegNr: beleg?.belegart === "ohne_beleg" ? "" : beleg?.belegNr || vorlage?.belegNr || "",
+    datum: beleg?.datum || vorlage?.datum || heute(),
+    lkw: beleg?.positionen?.[0]?.lkw || vorlage?.lkw || "",
     anlass: beleg?.positionen?.[0]?.anlass || "",
-    kmStand: beleg?.positionen?.[0]?.kmStand ?? "",
+    kmStand: beleg?.positionen?.[0]?.kmStand ?? vorlage?.kmStand ?? "",
     bemerkung: beleg?.bemerkung || "",
-    summeBeleg: "",
+    summeBeleg: vorlage?.netto != null ? fmt(Math.abs(vorlage.netto)) : "",
   }));
   const [pos, setPos] = useState(() =>
     beleg?.positionen?.length
       ? beleg.positionen.map((p) => ({ lkw: p.lkw || "", kategorie: p.kategorie, bezeichnung: p.bezeichnung, artikelNr: p.artikelNr || "", menge: p.menge ?? 1, betrag: fmt(vz * (p.netto + p.pfand)) }))
-      : [{ lkw: "", kategorie: "Ersatzteil", bezeichnung: "", artikelNr: "", menge: 1, betrag: "" }]
+      : [{ lkw: "", kategorie: standardKategorie(vorlage?.lieferant), bezeichnung: "", artikelNr: "", menge: 1, betrag: "" }]
   );
-  const [datei, setDatei] = useState(null);
+  const [datei, setDatei] = useState(vorlage?.file || null);
   const [busy, setBusy] = useState(false);
   const [fehler, setFehler] = useState("");
 
@@ -122,6 +122,17 @@ export default function BelegErfassen({ lkwOptionen, lieferanten, beleg, onClose
           <div style={{ fontSize: 16, fontWeight: 600, color: TEXT }}>{bearbeiten ? "Beleg bearbeiten" : "Beleg erfassen"}</div>
           <button className="ghost" onClick={onClose} disabled={busy} style={{ padding: "4px 8px" }}><X size={15} /></button>
         </div>
+
+        {vorlage && (
+          <div style={{ background: WARN_BG, color: AMBER_DARK, borderRadius: 8, padding: "9px 12px", fontSize: 12.5, marginBottom: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ flex: "1 1 300px" }}>
+              {vorlage.scan
+                ? "Eingescannte Rechnung – bitte Angaben vom Beleg abtippen. Das PDF wird beim Speichern angehängt."
+                : "Aus dem PDF vorausgefüllt, soweit erkennbar – bitte prüfen und die Positionen eintragen. Die Netto-Summe steht unten als Kontrolle. Das PDF wird beim Speichern angehängt."}
+            </span>
+            {datei && <button className="ghost" style={{ padding: "3px 10px", fontSize: 12 }} onClick={() => window.open(URL.createObjectURL(datei), "_blank")}><Paperclip size={12} /> PDF ansehen</button>}
+          </div>
+        )}
 
         {/* Kopf */}
         <div className="be-kopf" style={{ display: "grid", gridTemplateColumns: "2fr 1.2fr 1.4fr 1fr", gap: 10, marginBottom: 10 }}>
