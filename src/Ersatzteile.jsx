@@ -376,7 +376,7 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
         <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 10 }}>
           <b>Manuell</b> für Werkstätten, andere Teilehändler, TÜV/AU und Käufe ohne Beleg – mit Teilen und Arbeitslohn getrennt, PDF/Foto anhängbar.
         </div>
-        <div style={{ fontSize: 13, fontWeight: 600, color: TEXT, marginBottom: 4 }}>PDF-Import: Winkler, Heinrich Göbel, TSB Darmstadt</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: TEXT, marginBottom: 4 }}>PDF-Import: Winkler, Heinrich Göbel, TSB Darmstadt, EGS (TÜV/AU)</div>
         <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 14 }}>
           Eine oder mehrere PDFs auf einmal auswählen – der Lieferant wird automatisch erkannt. Die Positionen werden direkt aus dem Text gelesen
           (keine KI) und gegen die Belegsumme geprüft. Das Fahrzeug kommt aus Kennzeichen, Bestell-Daten bzw. Fahrgestellnummer auf dem Beleg –
