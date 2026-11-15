@@ -1,5 +1,6 @@
-// Fuhrpark-Reiter "Versicherung & Steuer": Kfz-Versicherung (vierteljährlich)
-// und Kfz-Steuer (jährlich, mit Häkchen Anhängerzuschlag) je Fahrzeug.
+// Fuhrpark-Reiter "Laufende Kosten": Kfz-Versicherung (vierteljährlich),
+// Kfz-Steuer (jährlich, mit Häkchen Anhängerzuschlag) und Telematik
+// (monatlich, z. B. Ortung + Tacho-Fernauslesen) je Fahrzeug.
 // Jede Zahlung hat einen Zeitraum von-bis; "Folgezahlung" legt den nächsten
 // Zeitraum direkt im Anschluss mit gleichem Betrag an (Betrag danach anpassbar).
 // Die Fuhrpark-Übersicht verteilt die Beträge tagesgenau über den Zeitraum.
@@ -41,8 +42,9 @@ function parseBetrag(s) {
 function Sektion({ art, kennzeichen, alle, jahr, onChange, setFehler }) {
   const cfg = adb.ARTEN[art];
   const steuer = art === "steuer";
+  const monatlich = cfg.monate === 1;
   const liste = useMemo(() => alle.filter((x) => x.art === art), [alle, art]);
-  const leer = { kennzeichen: "", von: "", bis: "", betrag: "", anhaengerzuschlag: false, gesellschaft: "", vertragNr: "" };
+  const leer = { kennzeichen: "", von: "", bis: "", betrag: "", anhaengerzuschlag: false, gesellschaft: cfg.vorgabeAnbieter || "", vertragNr: "", laufendBis: "" };
   const [form, setForm] = useState(null);
   const [busy, setBusy] = useState(false);
   const jStart = `${jahr}-01-01`, jEnde = `${jahr}-12-31`;
@@ -61,16 +63,20 @@ function Sektion({ art, kennzeichen, alle, jahr, onChange, setFehler }) {
 
   async function folgezahlung(p) {
     if (!p.letzte) {
-      setForm({ ...leer, kennzeichen: p.kz, von: `${jahr}-01-01`, bis: adb.periodenEnde(`${jahr}-01-01`, cfg.monate) });
+      setForm({ ...leer, kennzeichen: p.kz, von: `${jahr}-01-01`, bis: adb.periodenEnde(`${jahr}-01-01`, cfg.monate), laufendBis: monatlich ? jEnde : "" });
       return;
     }
     const von = adb.plusTage(p.letzte.bis, 1);
+    const basis = { kennzeichen: p.kz, art, betrag: p.letzte.betrag, anhaengerzuschlag: p.letzte.anhaengerzuschlag, gesellschaft: p.letzte.gesellschaft, vertragNr: p.letzte.vertragNr };
     setBusy(true);
     try {
-      await adb.addAbgabe({
-        kennzeichen: p.kz, art, von, bis: adb.periodenEnde(von, cfg.monate), betrag: p.letzte.betrag,
-        anhaengerzuschlag: p.letzte.anhaengerzuschlag, gesellschaft: p.letzte.gesellschaft, vertragNr: p.letzte.vertragNr,
-      });
+      if (monatlich) {
+        // monatlich gleicher Betrag: bis Ende des gewählten Jahres fortschreiben (mind. 1 Monat)
+        const bisEnde = von > jEnde ? `${Number(von.slice(0, 4))}-12-31` : jEnde;
+        await adb.addAbgaben(adb.monatsPerioden(von, bisEnde).map(({ anteil, ...z }) => ({ ...basis, ...z, betrag: Math.round(basis.betrag * anteil * 100) / 100 })));
+      } else {
+        await adb.addAbgabe({ ...basis, von, bis: adb.periodenEnde(von, cfg.monate) });
+      }
       onChange();
     } catch (e) { setFehler(e.message); }
     setBusy(false);
@@ -85,7 +91,12 @@ function Sektion({ art, kennzeichen, alle, jahr, onChange, setFehler }) {
     if (form.bis < form.von) { setFehler("„bis“ liegt vor „von“."); return; }
     setBusy(true);
     try {
-      await adb.addAbgabe({ ...form, art, betrag, gesellschaft: form.gesellschaft.trim(), vertragNr: form.vertragNr.trim() });
+      const basis = { kennzeichen: form.kennzeichen, art, betrag, anhaengerzuschlag: form.anhaengerzuschlag, gesellschaft: form.gesellschaft.trim(), vertragNr: form.vertragNr.trim() };
+      if (monatlich && form.laufendBis && form.laufendBis > form.bis) {
+        await adb.addAbgaben(adb.monatsPerioden(form.von, form.laufendBis).map(({ anteil, ...z }) => ({ ...basis, ...z, betrag: Math.round(basis.betrag * anteil * 100) / 100 })));
+      } else {
+        await adb.addAbgabe({ ...basis, von: form.von, bis: form.bis });
+      }
       setForm(null);
       onChange();
     } catch (e) { setFehler(e.message); }
@@ -108,10 +119,12 @@ function Sektion({ art, kennzeichen, alle, jahr, onChange, setFehler }) {
         <div>
           <div style={h2}>{cfg.label}</div>
           <div style={{ fontSize: 12, color: TEXT_MUTED, marginBottom: 12 }}>
-            Zahlungsweise {cfg.zahlweise} · „Folgezahlung“ legt den nächsten Zeitraum ({cfg.monate} Monate) direkt im Anschluss mit gleichem Betrag an – Betrag danach bei Bedarf ändern.
+            {monatlich
+              ? <>Zahlungsweise monatlich · Betrag je Monat einmal erfassen, „monatlich bis“ legt alle Monate auf einmal an. „Fortschreiben“ verlängert mit gleichem Betrag bis Jahresende – Betrag einzelner Monate unten änderbar.</>
+              : <>Zahlungsweise {cfg.zahlweise} · „Folgezahlung“ legt den nächsten Zeitraum ({cfg.monate} Monate) direkt im Anschluss mit gleichem Betrag an – Betrag danach bei Bedarf ändern.</>}
           </div>
         </div>
-        <button className="ghost" onClick={() => setForm(form ? null : { ...leer, von: `${jahr}-01-01`, bis: adb.periodenEnde(`${jahr}-01-01`, cfg.monate) })}><Plus size={14} /> Zahlung erfassen</button>
+        <button className="ghost" onClick={() => setForm(form ? null : { ...leer, von: `${jahr}-01-01`, bis: adb.periodenEnde(`${jahr}-01-01`, cfg.monate), laufendBis: monatlich ? jEnde : "" })}><Plus size={14} /> Zahlung erfassen</button>
       </div>
 
       {form && (
@@ -131,8 +144,14 @@ function Sektion({ art, kennzeichen, alle, jahr, onChange, setFehler }) {
             <label>bis</label>
             <input type="date" value={form.bis} onChange={(e) => setForm({ ...form, bis: e.target.value })} style={{ width: 145 }} />
           </div>
+          {monatlich && (
+            <div>
+              <label title="Legt für jeden Monat bis zu diesem Datum eine Zahlung mit gleichem Betrag an">monatlich bis</label>
+              <input type="date" value={form.laufendBis} onChange={(e) => setForm({ ...form, laufendBis: e.target.value })} style={{ width: 145 }} />
+            </div>
+          )}
           <div>
-            <label>Betrag</label>
+            <label>{monatlich ? "Betrag je Monat" : "Betrag"}</label>
             <input className="mono" inputMode="decimal" placeholder="0,00" value={form.betrag} onChange={(e) => setForm({ ...form, betrag: e.target.value })} style={{ width: 110, textAlign: "right" }} />
           </div>
           {steuer && (
@@ -158,7 +177,7 @@ function Sektion({ art, kennzeichen, alle, jahr, onChange, setFehler }) {
           <thead>
             <tr>
               <th>Fahrzeug</th>{steuer && <th>Anhänger&shy;zuschlag</th>}<th>{cfg.gesellschaft}</th>
-              <th>Letzter Zeitraum</th><th style={right}>Letzter Betrag</th><th>bezahlt bis</th><th style={right}>Kosten {jahr}</th><th></th>
+              <th>Letzter Zeitraum</th><th style={right}>{monatlich ? "Betrag/Monat" : "Letzter Betrag"}</th><th>bezahlt bis</th><th style={right}>Kosten {jahr}</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -190,8 +209,8 @@ function Sektion({ art, kennzeichen, alle, jahr, onChange, setFehler }) {
                   <td className="mono" style={{ ...right, fontWeight: 600, color: MARINE }}>{p.imJahr ? euro(p.imJahr) : "–"}</td>
                   <td>
                     <button className="ghost" disabled={busy} onClick={() => folgezahlung(p)} style={{ padding: "4px 9px", whiteSpace: "nowrap" }}
-                      title={l ? `Neuer Zeitraum ab ${dmy(adb.plusTage(l.bis, 1))} mit ${euro(l.betrag)}` : "Erste Zahlung erfassen"}>
-                      <CalendarPlus size={13} /> {l ? "Folgezahlung" : "Erfassen"}
+                      title={l ? (monatlich ? `Ab ${dmy(adb.plusTage(l.bis, 1))} monatlich ${euro(l.betrag)} bis Jahresende anlegen` : `Neuer Zeitraum ab ${dmy(adb.plusTage(l.bis, 1))} mit ${euro(l.betrag)}`) : "Erste Zahlung erfassen"}>
+                      <CalendarPlus size={13} /> {l ? (monatlich ? "Fortschreiben" : "Folgezahlung") : "Erfassen"}
                     </button>
                   </td>
                 </tr>
@@ -265,7 +284,7 @@ export default function Abgaben({ fleet }) {
       setExtra(lf.filter((f) => f.art !== "Miete").map((f) => f.kennzeichen));
       setMiete(lf.filter((f) => f.art === "Miete").map((f) => f.kennzeichen));
     } catch (e) {
-      setFehler("Versicherung & Steuer konnte nicht geladen werden: " + (e.message || e));
+      setFehler("Laufende Kosten konnten nicht geladen werden: " + (e.message || e));
     }
     setLaden(false);
   }
@@ -280,13 +299,19 @@ export default function Abgaben({ fleet }) {
     const rest = Array.from(new Set([...extra, ...mitZahlung])).filter((k) => !fp.includes(k) && (!miete.includes(k) || mitZahlung.has(k))).sort();
     return [...fp, ...rest];
   }, [fleet, extra, miete, alle]);
+  // Telematik auch für Miet-LKW (Gerät/Abo läuft unabhängig von der Miete)
+  const kennzeichenAlle = useMemo(() => {
+    const fp = (fleet || []).map((f) => f.plate);
+    const rest = Array.from(new Set([...extra, ...miete, ...alle.map((x) => x.kennzeichen)])).filter((k) => !fp.includes(k)).sort();
+    return [...fp, ...rest];
+  }, [fleet, extra, miete, alle]);
   const jahre = useMemo(() => {
     const s = new Set(alle.flatMap((x) => [Number(x.von.slice(0, 4)), Number(x.bis.slice(0, 4))]));
     for (let j = 2026; j <= new Date().getFullYear() + 1; j++) s.add(j);
     return Array.from(s).sort((a, b) => b - a);
   }, [alle]);
 
-  if (laden) return <div style={{ padding: 30, color: TEXT_MUTED, display: "flex", gap: 8, alignItems: "center" }}><Loader2 size={16} /> Lade Versicherung & Steuer …</div>;
+  if (laden) return <div style={{ padding: 30, color: TEXT_MUTED, display: "flex", gap: 8, alignItems: "center" }}><Loader2 size={16} /> Lade laufende Kosten …</div>;
 
   return (
     <div>
@@ -300,6 +325,7 @@ export default function Abgaben({ fleet }) {
       {fehler && <div style={{ fontSize: 12.5, color: DANGER, background: DANGER_BG, borderRadius: 8, padding: "10px 14px", marginBottom: 16 }}>{fehler}</div>}
       <Sektion art="versicherung" kennzeichen={kennzeichen} alle={alle} jahr={jahr} onChange={neuLaden} setFehler={setFehler} />
       <Sektion art="steuer" kennzeichen={kennzeichen} alle={alle} jahr={jahr} onChange={neuLaden} setFehler={setFehler} />
+      <Sektion art="telematik" kennzeichen={kennzeichenAlle} alle={alle} jahr={jahr} onChange={neuLaden} setFehler={setFehler} />
     </div>
   );
 }

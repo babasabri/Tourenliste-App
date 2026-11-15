@@ -1,10 +1,11 @@
-// Datenzugriff für den Fuhrpark-Reiter "Versicherung & Steuer"
+// Datenzugriff für den Fuhrpark-Reiter "Laufende Kosten" (Versicherung, Steuer, Telematik)
 // (Tabelle fahrzeug_abgaben: eine Zeile je Zahlung mit Zeitraum von-bis).
 import { supabase } from "./supabaseClient";
 
 export const ARTEN = {
   versicherung: { label: "Kfz-Versicherung", monate: 3, zahlweise: "vierteljährlich", gesellschaft: "Versicherer", nr: "Versicherungsschein-Nr." },
   steuer: { label: "Kfz-Steuer", monate: 12, zahlweise: "jährlich", gesellschaft: "Hauptzollamt", nr: "Steuernummer / Aktenzeichen" },
+  telematik: { label: "Telematik (Ortung & Tacho-Fernauslesen)", monate: 1, zahlweise: "monatlich", gesellschaft: "Anbieter", nr: "Kunden-/Vertragsnr.", vorgabeAnbieter: "Yukatel RouteControl" },
 };
 
 const fromDb = (r) => ({
@@ -43,6 +44,25 @@ export async function addAbgabe(x) {
   if (error) throw new Error(error.message);
   return fromDb(data);
 }
+// mehrere Zahlungen auf einmal (z. B. monatlich bis Jahresende)
+export async function addAbgaben(liste) {
+  if (!liste.length) return;
+  const { error } = await supabase.from("fahrzeug_abgaben").insert(liste.map(toDb));
+  if (error) throw new Error(error.message);
+}
+// Monatszeiträume von "von" bis einschließlich "bisSpaetestens"
+export function monatsPerioden(von, bisSpaetestens) {
+  const out = [];
+  let v = von;
+  while (v <= bisSpaetestens && out.length < 120) {
+    const e = periodenEnde(v, 1);
+    const bis = e <= bisSpaetestens ? e : bisSpaetestens;
+    // angebrochener letzter Monat: Anteil nach Tagen (für den Betrag)
+    out.push({ von: v, bis, anteil: bis === e ? 1 : tageZwischen(v, bis) / tageZwischen(v, e) });
+    v = plusTage(e, 1);
+  }
+  return out;
+}
 export async function updateAbgabe(id, patch) {
   const { error } = await supabase.from("fahrzeug_abgaben").update({ ...toDb(patch), geaendert_am: new Date().toISOString() }).eq("id", id);
   if (error) throw new Error(error.message);
@@ -66,7 +86,7 @@ export function periodenEnde(von, monate) {
 }
 export function tageZwischen(a, b) { return Math.round((fromIso(b) - fromIso(a)) / 86400000) + 1; }
 
-// Betrag tagesgenau auf [start, ende] verteilen -> { kennzeichen: { versicherung, steuer } }
+// Betrag tagesgenau auf [start, ende] verteilen -> { kennzeichen: { versicherung, steuer, telematik } }
 export function abgabenJeLkw(liste, start, ende) {
   const out = {};
   for (const x of liste) {
@@ -74,8 +94,8 @@ export function abgabenJeLkw(liste, start, ende) {
     const e = ende && ende < x.bis ? ende : x.bis;
     if (a > e) continue;
     const anteil = (x.betrag * tageZwischen(a, e)) / tageZwischen(x.von, x.bis);
-    out[x.kennzeichen] = out[x.kennzeichen] || { versicherung: 0, steuer: 0 };
-    out[x.kennzeichen][x.art] += anteil;
+    out[x.kennzeichen] = out[x.kennzeichen] || { versicherung: 0, steuer: 0, telematik: 0 };
+    out[x.kennzeichen][x.art] = (out[x.kennzeichen][x.art] || 0) + anteil;
   }
   return out;
 }
