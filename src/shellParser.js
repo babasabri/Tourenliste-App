@@ -1,3 +1,4 @@
+import { stationKorrigieren } from "./stationen";
 // ============================================================================
 // Shell-Tankkarte (SVG / euroShell): liest die PDF-Belege der SVG direkt im
 // Browser aus (gleiche Zeilen-Rekonstruktion wie Tankpool/Gutschriften, ohne KI).
@@ -120,7 +121,7 @@ export function parseShellLines(rohLines, fleetPlates) {
       const liter = !!istL;
       const mg = zahl(menge);
       res.positionen.push({
-        karte, kennzeichen_beleg: kz, lkw, datum: isoDatum(d), zeit: null, station,
+        karte, kennzeichen_beleg: kz, lkw, datum: isoDatum(d), zeit: null, station: stationKorrigieren(station),
         sorte: produkt, kategorie: kategorie(produkt, liter),
         menge: liter ? mg : (/Service-Gebühren/i.test(produkt) ? 1 : mg),
         einheit: liter ? "L" : "Stk",

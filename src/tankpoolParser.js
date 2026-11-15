@@ -17,6 +17,7 @@
 
 import { loadPdfjs, extractLayoutLines } from "./gutschriftParser";
 import { istShellBeleg, parseShellLines } from "./shellParser";
+import { stationKorrigieren } from "./stationen";
 
 // Die Tankkarte des Miet-LKW steht auf der Rechnung nur als "Mietfahrzeug".
 // Vorgabe: bis 26.07.2026 war das der frühere Miet-LKW KO-OF 213, ab
@@ -30,13 +31,6 @@ const norm = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 
 // Kennzeichen von der Rechnung ("OF-RY 700") auf die Fuhrpark-Schreibweise
 // ("OF RY 700") bringen.
-// Auf den Tankpool-Rechnungen sind Stationsnamen auf eine feste Breite gekürzt
-// (z. B. "Aschaffenbur"). Bekannte Kürzungen hier auf den vollen Namen setzen.
-const STATION_KORREKTUR = { Aschaffenbur: "Aschaffenburg" };
-function stationKorrigieren(name) {
-  return STATION_KORREKTUR[name] || name;
-}
-
 export function ordneLkwZu(kennzeichenBeleg, isoDatum, fleetPlates) {
   const kz = String(kennzeichenBeleg || "").trim();
   if (/^mietfahrzeug/i.test(kz)) return mietfahrzeugLkw(isoDatum);
