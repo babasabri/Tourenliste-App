@@ -4085,6 +4085,10 @@ export default function TourenApp() {
                 </select>
               </div>
             </div>
+            <div style={{ marginTop: 18, background: BG, borderRadius: 8, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 13, fontWeight: 500, color: TEXT_MUTED }}>Gesamtsumme</span>
+              <span className="mono" style={{ fontSize: 18, fontWeight: 600, color: MARINE }}>{euro(gesamt(editForm))}</span>
+            </div>
             <div style={{ fontSize: 11, color: TEXT_MUTED, marginTop: 10 }}>* Pflichtfeld</div>
             {confirmDelete && (
               <div style={{ marginTop: 16, background: DANGER_BG, borderRadius: 8, padding: "12px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
