@@ -417,7 +417,7 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
         <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 10 }}>
           <b>Manuell</b> für Werkstätten, andere Teilehändler, TÜV/AU und Käufe ohne Beleg – mit Teilen und Arbeitslohn getrennt, PDF/Foto anhängbar.
         </div>
-        <div style={{ fontSize: 13, fontWeight: 600, color: TEXT, marginBottom: 4 }}>PDF-Import: E-Rechnungen (ZUGFeRD) jedes Lieferanten · Winkler · Heinrich Göbel · TSB Darmstadt · EGS (TÜV/AU)</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: TEXT, marginBottom: 4 }}>PDF-Import: E-Rechnungen (ZUGFeRD) jedes Lieferanten · Winkler · Heinrich Göbel · TSB Darmstadt · EGS (TÜV/AU) · First Stop (Reifen)</div>
         <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 14 }}>
           Eine oder mehrere PDFs auf einmal auswählen – der Lieferant wird automatisch erkannt. Die Positionen werden direkt aus dem Text gelesen
           (keine KI) und gegen die Belegsumme geprüft. Das Fahrzeug kommt aus Kennzeichen, Bestell-Daten bzw. Fahrgestellnummer auf dem Beleg –
@@ -573,7 +573,7 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
             <Kpi label="Ersatzteile" value={euro(gesamt.kat.Ersatzteil || 0)} sub={gesamt.kat.Reifen ? `+ Reifen ${euro(gesamt.kat.Reifen)}` : null} />
             <Kpi label="Werkstatt, Wartung, Prüfung" value={euro((gesamt.kat["Werkstatt (Lohn)"] || 0) + (gesamt.kat["Wartung/Service"] || 0) + (gesamt.kat["Prüfung (HU/SP/AU)"] || 0))} sub="Fremdleistungen" />
             <Kpi label="Ausrüstung & Material" value={euro((gesamt.kat["Ausrüstung"] || 0) + (gesamt.kat.Werkstattbedarf || 0) + (gesamt.kat.Betriebsstoff || 0))} sub="Ausrüstung, Werkstattbedarf, Betriebsstoffe" />
-            <Kpi label="Gutschriften" value={euro(gesamt.gs)} sub="Rückgaben, Kulanz, Pfand" />
+            <Kpi label="Gutschriften" value={euro(gesamt.gs)} sub="Rückgaben, Kulanz, Pfand, Förderungen" />
             <Kpi label="Ohne Fahrzeug" value={gesamt.offenN} sub={gesamt.offenN ? euro(gesamt.offenE) : "alles zugeordnet"} warn={gesamt.offenN > 0} />
           </div>
 
@@ -615,7 +615,7 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
               </table>
             </div>
             <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginTop: 10 }}>
-              Beträge netto inkl. Altteilpfand; Gutschriften (Rückgaben, Kulanz, Pfand zurück) sind abgezogen. Zeile anklicken filtert die Liste unten.
+              Beträge netto inkl. Altteilpfand; Gutschriften (Rückgaben, Kulanz, Pfand zurück, Förderungen) sind abgezogen. Zeile anklicken filtert die Liste unten.
             </div>
           </div>
 

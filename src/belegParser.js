@@ -6,9 +6,10 @@ import { istGoebel, parseGoebelLines, aufbereitenGoebel } from "./goebelParser";
 import { istTsb, parseTsbLines, aufbereitenTsb } from "./tsbParser";
 import { istEgs, parseEgsLines, aufbereitenEgs } from "./egsParser";
 import { belegVorschlag } from "./belegVorschlag";
+import { istFirstStop, parseFirstStopLines, aufbereitenFirstStop } from "./firstStopParser";
 import { zugferdXmlAusPdf, parseZugferd } from "./zugferdParser";
 
-export const UNTERSTUETZT = "Winkler, Heinrich Göbel, TSB Darmstadt, EGS/KÜS und alle E-Rechnungen (ZUGFeRD/XRechnung)";
+export const UNTERSTUETZT = "Winkler, Heinrich Göbel, TSB Darmstadt, EGS/KÜS, First Stop und alle E-Rechnungen (ZUGFeRD/XRechnung)";
 
 export function belegAusZeilen(lines, dateiname, fleetPlates, finMap, lieferanten = [], xml = null) {
   if (istGoebel(lines)) {
@@ -20,6 +21,11 @@ export function belegAusZeilen(lines, dateiname, fleetPlates, finMap, lieferante
     const res = parseTsbLines(lines);
     if (!res.belegNr || res.positionen.length === 0) throw new Error("TSB-Beleg ohne Belegnummer oder ohne Positionen - Layout unbekannt.");
     return { dateiname, quelle: "tsb_pdf", ...aufbereitenTsb(res, fleetPlates, finMap) };
+  }
+  if (istFirstStop(lines)) {
+    const res = parseFirstStopLines(lines);
+    if (!res.belegNr || res.positionen.length === 0) throw new Error("First-Stop-Beleg ohne Belegnummer oder ohne Positionen - Layout unbekannt.");
+    return { dateiname, quelle: "firststop_pdf", ...aufbereitenFirstStop(res, fleetPlates, finMap) };
   }
   if (istEgs(lines)) {
     const res = parseEgsLines(lines);

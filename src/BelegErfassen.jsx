@@ -95,7 +95,7 @@ export default function BelegErfassen({ lkwOptionen, lieferanten, beleg, vorlage
         kategorie: p.kategorie, artikel_nr: p.artikelNr || null, bezeichnung: p.bezeichnung.trim(),
         menge: Number(String(p.menge).replace(",", ".")) || 1, einheit: "ST",
         netto: Math.round(s * parseBetrag(p.betrag) * 100) / 100, pfand: 0,
-        gutschrift_grund: k.belegart === "gutschrift" ? "Rückgabe/Reklamation" : null,
+        gutschrift_grund: k.belegart === "gutschrift" ? (/balm|förder|zuschuss/i.test(lieferant + " " + k.bemerkung) ? "Förderung" : "Rückgabe/Reklamation") : null,
         anlass: k.anlass.trim() || null, km_stand: km,
       }));
       const netto = Math.round(positionen.reduce((a, p) => a + p.netto, 0) * 100) / 100;
