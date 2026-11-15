@@ -2722,6 +2722,7 @@ export default function TourenApp() {
                   <tr>
                     <th>Datum</th><th>KW</th><th>LKW</th><th>Fahrer</th><th>Kunde</th>
                     <th>Auftrags-Nr.</th>
+                    <th style={{ textAlign: "right" }}>KM</th>
                     {COSTFIELDS.map((k) => <th key={k} style={{ textAlign: "right" }}>{COSTFIELD_LABELS[k]}</th>)}
                     <th style={{ textAlign: "right" }}>Gesamt</th>
                     <th>Status</th><th>Gutschrift</th><th></th>
@@ -2729,7 +2730,7 @@ export default function TourenApp() {
                 </thead>
                 <tbody>
                   {tourenList.length === 0 && (
-                    <tr><td colSpan={17} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>
+                    <tr><td colSpan={18} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>
                       {tourenFilterAktiv ? "Keine Touren für diese Filter." : "Noch keine Touren erfasst."}
                     </td></tr>
                   )}
@@ -2743,6 +2744,7 @@ export default function TourenApp() {
                         <td>{t.fahrer}</td>
                         <td {...kundeCellProps(t)}>{t.kunde}</td>
                         <td className="mono">{t.auftragsNr}</td>
+                        <td className="mono" style={{ textAlign: "right" }}>{t.km ? Number(t.km).toLocaleString("de-DE") : "–"}</td>
                         {COSTFIELDS.map((k) => (
                           <td key={k} className="mono" style={{ textAlign: "right" }}>{euro(t[k])}</td>
                         ))}
@@ -2808,6 +2810,7 @@ export default function TourenApp() {
                   <tr>
                     <th>Datum</th><th>KW</th><th>LKW</th><th>Fahrer</th><th>Kunde</th>
                     <th>Auftrags-Nr.</th>
+                    <th style={{ textAlign: "right" }}>KM</th>
                     {COSTFIELDS.map((k) => <th key={k} style={{ textAlign: "right" }}>{COSTFIELD_LABELS[k]}</th>)}
                     <th style={{ textAlign: "right" }}>Gesamt</th>
                     <th>Status</th><th></th>
@@ -2815,7 +2818,7 @@ export default function TourenApp() {
                 </thead>
                 <tbody>
                   {reklamationTours.length === 0 && (
-                    <tr><td colSpan={16} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>Keine offenen oder reklamierten Touren.</td></tr>
+                    <tr><td colSpan={17} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>Keine offenen oder reklamierten Touren.</td></tr>
                   )}
                   {reklamationTours.map((t) => {
                     const sc = statusColors(t.status);
@@ -2827,6 +2830,7 @@ export default function TourenApp() {
                         <td>{t.fahrer}</td>
                         <td {...kundeCellProps(t)}>{t.kunde}</td>
                         <td className="mono">{t.auftragsNr}</td>
+                        <td className="mono" style={{ textAlign: "right" }}>{t.km ? Number(t.km).toLocaleString("de-DE") : "–"}</td>
                         {COSTFIELDS.map((k) => (
                           <td key={k} className="mono" style={{ textAlign: "right" }}>{euro(t[k])}</td>
                         ))}
@@ -3202,13 +3206,14 @@ export default function TourenApp() {
                 <thead>
                   <tr>
                     <th>Datum</th><th>KW</th><th>LKW</th><th>Kunde</th><th>Auftrags-Nr.</th><th>Container-Nr.</th><th>PLZ</th><th>Ort</th>
+                    <th style={{ textAlign: "right" }}>KM</th>
                     {COSTFIELDS.map((k) => <th key={k} style={{ textAlign: "right" }}>{COSTFIELD_LABELS[k]}</th>)}
                     <th style={{ textAlign: "right" }}>Gesamt</th><th>Status</th><th>Gutschrift</th><th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {searchResults.length === 0 && (
-                    <tr><td colSpan={19} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>
+                    <tr><td colSpan={20} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>
                       {Object.values(search).some(Boolean) ? "Keine Treffer." : "Mindestens ein Suchfeld ausfüllen."}
                     </td></tr>
                   )}
@@ -3224,6 +3229,7 @@ export default function TourenApp() {
                         <td className="mono">{t.containerNr}</td>
                         <td className="mono">{t.plz}</td>
                         <td>{t.ort}</td>
+                        <td className="mono" style={{ textAlign: "right" }}>{t.km ? Number(t.km).toLocaleString("de-DE") : "–"}</td>
                         {COSTFIELDS.map((k) => (
                           <td key={k} className="mono" style={{ textAlign: "right" }}>{euro(t[k])}</td>
                         ))}
@@ -3531,14 +3537,15 @@ export default function TourenApp() {
                             jede Block-Tabelle ihre Spaltenbreiten unabhängig vom Inhalt - lange Werte
                             (z. B. Kunde "Gadot Germany") verschieben dann die Spalten eines Blocks
                             gegenüber den anderen Blöcken ("Spalten verrutscht" zwischen den LKW-Blöcken). */}
-                        <table style={{ minWidth: 1300, tableLayout: "fixed", width: "100%" }}>
+                        <table style={{ minWidth: 1350, tableLayout: "fixed", width: "100%" }}>
                           <colgroup>
                             <col style={{ width: "7%" }} />
                             <col style={{ width: "8%" }} />
-                            <col style={{ width: "13%" }} />
-                            <col style={{ width: "9%" }} />
+                            <col style={{ width: "11%" }} />
+                            <col style={{ width: "8%" }} />
                             <col style={{ width: "5%" }} />
                             <col style={{ width: "5%" }} />
+                            <col style={{ width: "4%" }} />
                             <col style={{ width: "6%" }} />
                             <col style={{ width: "5%" }} />
                             <col style={{ width: "5%" }} />
@@ -3547,7 +3554,7 @@ export default function TourenApp() {
                             <col style={{ width: "5%" }} />
                             <col style={{ width: "5%" }} />
                             <col style={{ width: "7%" }} />
-                            <col style={{ width: "8%" }} />
+                            <col style={{ width: "7%" }} />
                           </colgroup>
                           <thead>
                             <tr>
@@ -3557,6 +3564,7 @@ export default function TourenApp() {
                               <th style={ellipsisCell}>Auftrags-Nr.</th>
                               <th style={{ whiteSpace: "nowrap" }}>Ankunft</th>
                               <th style={{ whiteSpace: "nowrap" }}>Abfahrt</th>
+                              <th style={{ textAlign: "right", whiteSpace: "nowrap" }}>KM</th>
                               {COSTFIELDS.map((k) => (
                                 <th key={k} style={{ textAlign: "right", whiteSpace: "nowrap" }}>{COSTFIELD_LABELS[k]}</th>
                               ))}
@@ -3575,6 +3583,7 @@ export default function TourenApp() {
                                   <td className="mono ellipsis" style={ellipsisCell} title={t.auftragsNr}>{t.auftragsNr}</td>
                                   <td className="mono" style={{ whiteSpace: "nowrap" }}>{t.ankunft}</td>
                                   <td className="mono" style={{ whiteSpace: "nowrap" }}>{t.abfahrt}</td>
+                                  <td className="mono" style={{ textAlign: "right", whiteSpace: "nowrap" }}>{t.km ? Number(t.km).toLocaleString("de-DE") : "–"}</td>
                                   {COSTFIELDS.map((k) => (
                                     <td key={k} className="mono" style={{ textAlign: "right", whiteSpace: "nowrap" }}>{euro(t[k])}</td>
                                   ))}
