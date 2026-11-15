@@ -30,6 +30,13 @@ const norm = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 
 // Kennzeichen von der Rechnung ("OF-RY 700") auf die Fuhrpark-Schreibweise
 // ("OF RY 700") bringen.
+// Auf den Tankpool-Rechnungen sind Stationsnamen auf eine feste Breite gekürzt
+// (z. B. "Aschaffenbur"). Bekannte Kürzungen hier auf den vollen Namen setzen.
+const STATION_KORREKTUR = { Aschaffenbur: "Aschaffenburg" };
+function stationKorrigieren(name) {
+  return STATION_KORREKTUR[name] || name;
+}
+
 export function ordneLkwZu(kennzeichenBeleg, isoDatum, fleetPlates) {
   const kz = String(kennzeichenBeleg || "").trim();
   if (/^mietfahrzeug/i.test(kz)) return mietfahrzeugLkw(isoDatum);
@@ -87,7 +94,7 @@ function parseSammel(lines) {
       }
       positionen.push({
         karte, kennzeichen_beleg: kennzeichen, datum: isoDatum(d), zeit,
-        station: stationTeile.join(" ").replace(/\s*\/$/, ""), sorte, kategorie: kategorieVonSorte(sorte),
+        station: stationKorrigieren(stationTeile.join(" ").replace(/\s*\/$/, "")), sorte, kategorie: kategorieVonSorte(sorte),
         menge: zahl(menge), einheit: einheit.startsWith("Stk") ? "Stk" : "L",
         preis_netto: zahl(preis), wert_netto: zahl(wert), mwst_satz: mwst, km_beleg: km,
       });
@@ -136,7 +143,7 @@ function parseEinzel(lines) {
     if (d && cur.karte && !cur.station) {
       cur.datum = isoDatum(d[1]) || cur.datum;
       cur.zeit = d[2] || null;
-      cur.station = d[3].trim();
+      cur.station = stationKorrigieren(d[3].trim());
     }
   }
   positionen.forEach((p) => { if (!p.datum) p.datum = rechnungDatum; });
