@@ -10,7 +10,7 @@
 //   3 LKW); Beträge anteilig nach Menge, Summe bleibt exakt gleich.
 // - Gutschriften sind negativ gespeichert, Summen verrechnen sie automatisch.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Upload, Loader2, Trash2, RefreshCw, CheckCircle2, AlertTriangle, Scissors, X, Plus, Paperclip, Pencil, FilePlus2 } from "lucide-react";
 import { KATEGORIEN } from "./winklerParser";
 import { parseBelegPdf } from "./belegParser";
@@ -18,6 +18,7 @@ import * as edb from "./ersatzteilDb";
 import BelegErfassen from "./BelegErfassen";
 
 const MARINE = "#0F2A43";
+const AMBER = "#F2A93B";
 const AMBER_DARK = "#8A5A10";
 const CARD = "#FFFFFF";
 const BORDER = "#E1E6EC";
@@ -221,9 +222,39 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
   async function dateienGewaehlt(e) {
     const files = Array.from(e.target.files || []);
     e.target.value = "";
+    dateienVerarbeiten(files);
+  }
+
+  // Drag & Drop: PDFs mit der Maus in die Box "Belege erfassen" ziehen
+  const [ziehen, setZiehen] = useState(false);
+  const ziehZaehler = useRef(0);
+  useEffect(() => {
+    // Daneben fallen gelassene Dateien nicht vom Browser öffnen lassen
+    const stop = (e) => { if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files")) e.preventDefault(); };
+    window.addEventListener("dragover", stop);
+    window.addEventListener("drop", stop);
+    return () => { window.removeEventListener("dragover", stop); window.removeEventListener("drop", stop); };
+  }, []);
+  const istDateiZug = (e) => Array.from(e.dataTransfer?.types || []).includes("Files");
+  const dropHandler = {
+    onDragEnter: (e) => { if (!istDateiZug(e)) return; e.preventDefault(); ziehZaehler.current++; setZiehen(true); },
+    onDragOver: (e) => { if (!istDateiZug(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = "copy"; },
+    onDragLeave: (e) => { if (!istDateiZug(e)) return; ziehZaehler.current = Math.max(0, ziehZaehler.current - 1); if (ziehZaehler.current === 0) setZiehen(false); },
+    onDrop: (e) => {
+      if (!istDateiZug(e)) return;
+      e.preventDefault(); ziehZaehler.current = 0; setZiehen(false);
+      if (parsing || importiere) return;
+      const alle = Array.from(e.dataTransfer.files || []);
+      const pdfs = alle.filter((f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
+      if (pdfs.length < alle.length) setMeldung({ ok: false, text: `${alle.length - pdfs.length} Datei(en) ignoriert – hier bitte nur PDFs ablegen. Fotos über „Beleg manuell erfassen“ anhängen.` });
+      if (pdfs.length) dateienVerarbeiten(pdfs, pdfs.length < alle.length);
+    },
+  };
+
+  async function dateienVerarbeiten(files, meldungBehalten = false) {
     if (files.length === 0) return;
     setParsing(true);
-    setMeldung(null);
+    if (!meldungBehalten) setMeldung(null);
     const bekannte = new Map(belege.map((b) => [`${b.lieferant}|${b.belegNr}`, b]));
     const out = [];
     for (const file of files) {
@@ -368,7 +399,12 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
   return (
     <div>
       {/* ---------------- Upload ---------------- */}
-      <div style={{ ...card, maxWidth: 860 }}>
+      <div {...dropHandler} style={{ ...card, maxWidth: 860, position: "relative", ...(ziehen ? { outline: `2px dashed ${AMBER}`, outlineOffset: -6, background: "#FFF8EC" } : {}) }}>
+        {ziehen && (
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 2, background: "rgba(255,248,236,0.85)", borderRadius: "inherit" }}>
+            <div style={{ fontSize: 16, fontWeight: 600, color: MARINE, display: "flex", alignItems: "center", gap: 10 }}><Upload size={22} /> PDFs hier loslassen</div>
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
           <div style={h2}>Belege erfassen</div>
           <button className="primary" onClick={() => setFormBeleg("neu")}><FilePlus2 size={15} /> Beleg manuell erfassen</button>
@@ -383,10 +419,14 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
           fehlt es, ordnest du die Position danach unten selbst zu. Bei Göbel und TSB werden Teile und Arbeitslohn automatisch getrennt, Anlass und km-Stand übernommen. Schon importierte Belege werden erkannt und übersprungen.
           {letzterBeleg && <> Letzter erfasster Beleg: <b>{dmy(letzterBeleg)}</b>.</>}
         </div>
-        <label className="ghost" style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: parsing ? "wait" : "pointer", border: `1px solid ${BORDER}`, borderRadius: 6, padding: "7px 12px", fontSize: 13, color: TEXT, margin: 0, width: "auto" }}>
-          <Upload size={15} /> PDFs auswählen
-          <input type="file" accept="application/pdf,.pdf" multiple onChange={dateienGewaehlt} disabled={parsing || importiere} style={{ display: "none" }} />
-        </label>
+        <div style={{ border: `2px dashed ${BORDER}`, borderRadius: 10, padding: "16px 18px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+          <Upload size={22} style={{ color: TEXT_MUTED }} />
+          <div style={{ fontSize: 13, color: TEXT, flex: "1 1 220px" }}><b>PDFs hierher ziehen</b> <span style={{ color: TEXT_MUTED }}>– mehrere auf einmal, Lieferanten gemischt – oder</span></div>
+          <label className="ghost" style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: parsing ? "wait" : "pointer", border: `1px solid ${BORDER}`, borderRadius: 6, padding: "7px 12px", fontSize: 13, color: TEXT, margin: 0, width: "auto", background: "#fff" }}>
+            PDFs auswählen
+            <input type="file" accept="application/pdf,.pdf" multiple onChange={dateienGewaehlt} disabled={parsing || importiere} style={{ display: "none" }} />
+          </label>
+        </div>
         {parsing && <div style={{ marginTop: 12, fontSize: 13, color: MARINE, display: "flex", gap: 8, alignItems: "center" }}><Loader2 size={15} /> Lese Belege aus …</div>}
         {meldung && (
           <div style={{ marginTop: 12, fontSize: 12.5, borderRadius: 8, padding: "10px 14px", background: meldung.ok ? SUCCESS_BG : DANGER_BG, color: meldung.ok ? SUCCESS : DANGER }}>{meldung.text}</div>
