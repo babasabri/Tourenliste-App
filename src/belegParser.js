@@ -11,12 +11,12 @@ export function belegAusZeilen(lines, dateiname, fleetPlates, finMap) {
   if (istGoebel(lines)) {
     const res = parseGoebelLines(lines);
     if (!res.belegNr || res.positionen.length === 0) throw new Error("Göbel-Beleg ohne Belegnummer oder ohne Positionen - Layout unbekannt.");
-    return { dateiname, ...aufbereitenGoebel(res, fleetPlates, finMap) };
+    return { dateiname, quelle: "goebel_pdf", ...aufbereitenGoebel(res, fleetPlates, finMap) };
   }
   if (istTsb(lines)) {
     const res = parseTsbLines(lines);
     if (!res.belegNr || res.positionen.length === 0) throw new Error("TSB-Beleg ohne Belegnummer oder ohne Positionen - Layout unbekannt.");
-    return { dateiname, ...aufbereitenTsb(res, fleetPlates, finMap) };
+    return { dateiname, quelle: "tsb_pdf", ...aufbereitenTsb(res, fleetPlates, finMap) };
   }
   if (lines.some((l) => /Winkler/i.test(l))) return winklerAusZeilen(lines, dateiname, fleetPlates, finMap);
   throw new Error(`Lieferant nicht erkannt (automatisch lesbar: ${UNTERSTUETZT}). Bitte über „Beleg manuell erfassen“ eintragen.`);

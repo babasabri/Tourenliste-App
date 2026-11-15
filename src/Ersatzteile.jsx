@@ -224,14 +224,15 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
     if (files.length === 0) return;
     setParsing(true);
     setMeldung(null);
-    const bekannte = new Set(belege.map((b) => `${b.lieferant}|${b.belegNr}`));
+    const bekannte = new Map(belege.map((b) => [`${b.lieferant}|${b.belegNr}`, b]));
     const out = [];
     for (const file of files) {
       try {
         const parsed = await parseBelegPdf(file, fleetPlates, finMap);
         const key = `${parsed.lieferant}|${parsed.belegNr}`;
         const doppelt = out.some((o) => o.parsed && `${o.parsed.lieferant}|${o.parsed.belegNr}` === key);
-        out.push({ dateiname: file.name, file, parsed, schonDa: bekannte.has(key) || doppelt });
+        const vorhanden = bekannte.get(key);
+        out.push({ dateiname: file.name, file, parsed, schonDa: !!vorhanden || doppelt, anhaengenAn: vorhanden && !vorhanden.dateiPfad && !doppelt ? vorhanden.id : null });
       } catch (err) {
         out.push({ dateiname: file.name, fehler: err.message || String(err) });
       }
@@ -242,11 +243,17 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
   }
 
   const importierbar = vorschau.filter((v) => v.parsed && !v.schonDa && !v.parsed.summenAbweichung);
+  const anzuhaengen = vorschau.filter((v) => v.anhaengenAn);
 
   async function uebernehmen() {
     setImportiere(true);
     let n = 0, pos = 0, offen = 0;
     const fehlerListe = [];
+    let angehaengt = 0;
+    for (const v of anzuhaengen) {
+      try { await edb.dateiAnhaengen(v.anhaengenAn, v.file, v.parsed.lieferant); angehaengt++; }
+      catch (err) { fehlerListe.push(`${v.parsed.belegNr} (PDF anhängen): ${err.message}`); }
+    }
     for (const v of importierbar) {
       try {
         // PDF mit ablegen (bei Fehler trotzdem importieren, nur ohne Datei)
@@ -263,7 +270,7 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
     setVorschau([]);
     setMeldung({
       ok: fehlerListe.length === 0,
-      text: `${n} Beleg(e) mit ${pos} Positionen übernommen.` + (offen ? ` ${offen} Position(en) ohne Fahrzeug – bitte unten zuordnen (Filter LKW „Offen“).` : "") + (fehlerListe.length ? ` Fehler: ${fehlerListe.join("; ")}` : ""),
+      text: `${n} Beleg(e) mit ${pos} Positionen übernommen.` + (angehaengt ? ` ${angehaengt} PDF(s) an vorhandene Belege angehängt.` : "") + (offen ? ` ${offen} Position(en) ohne Fahrzeug – bitte unten zuordnen (Filter LKW „Offen“).` : "") + (fehlerListe.length ? ` Fehler: ${fehlerListe.join("; ")}` : ""),
     });
     if (offen) setF((x) => ({ ...x, lkw: OFFEN }));
     neuLaden();
@@ -399,6 +406,7 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
                     const offen = p ? p.positionen.filter((x) => !x.lkw).length : 0;
                     let status;
                     if (v.fehler) status = <span style={{ color: DANGER }}>{v.fehler}</span>;
+                    else if (v.anhaengenAn) status = <span style={{ color: SUCCESS }}><Paperclip size={13} style={{ verticalAlign: -2 }} /> schon erfasst – PDF wird angehängt</span>;
                     else if (v.schonDa) status = <span style={{ color: TEXT_MUTED }}>schon importiert – wird übersprungen</span>;
                     else if (p.summenAbweichung) status = <span style={{ color: DANGER }}><AlertTriangle size={13} /> Summe passt nicht ({euro(p.parsedSumme)} statt {euro(p.dokumentSumme)}) – wird nicht übernommen</span>;
                     else status = <span style={{ color: SUCCESS }}><CheckCircle2 size={13} style={{ verticalAlign: -2 }} /> Summe stimmt</span>;
@@ -423,8 +431,8 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
               </table>
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-              <button className="primary" disabled={importierbar.length === 0 || importiere} onClick={uebernehmen}>
-                {importiere ? <Loader2 size={15} /> : <CheckCircle2 size={15} />} {importierbar.length} Beleg(e) übernehmen
+              <button className="primary" disabled={importierbar.length + anzuhaengen.length === 0 || importiere} onClick={uebernehmen}>
+                {importiere ? <Loader2 size={15} /> : <CheckCircle2 size={15} />} {importierbar.length} Beleg(e) übernehmen{anzuhaengen.length ? ` · ${anzuhaengen.length} PDF(s) anhängen` : ""}
               </button>
               <button className="ghost" onClick={() => setVorschau([])} disabled={importiere}>Abbrechen</button>
             </div>
@@ -645,7 +653,17 @@ export default function Ersatzteile({ fleet, startFilter, onFilterChange }) {
                         <td className="mono" style={right}>{euro(b.netto)}</td>
                         <td className="mono" style={right}>{euro(b.brutto)}</td>
                         <td style={{ fontSize: 12, color: TEXT_MUTED }}>
-                          {b.dateiPfad ? <button className="ghost" onClick={() => dateiOeffnen(b.dateiPfad)} style={{ padding: "2px 7px", fontSize: 11.5 }}><Paperclip size={11} /> {b.dateiname || "ansehen"}</button> : b.dateiname}
+                          {b.dateiPfad ? <button className="ghost" onClick={() => dateiOeffnen(b.dateiPfad)} style={{ padding: "2px 7px", fontSize: 11.5 }}><Paperclip size={11} /> {b.dateiname || "ansehen"}</button> : (
+                            <label title="PDF/Foto anhängen" style={{ display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", border: `1px dashed ${BORDER}`, borderRadius: 6, padding: "2px 7px", fontSize: 11.5, color: TEXT, margin: 0, width: "auto" }}>
+                              <Paperclip size={11} /> anhängen
+                              <input type="file" accept="application/pdf,.pdf,image/*" style={{ display: "none" }} onChange={async (e) => {
+                                const file = e.target.files?.[0]; e.target.value = "";
+                                if (!file) return;
+                                try { await edb.dateiAnhaengen(b.id, file, b.lieferant); neuLaden(); }
+                                catch (err) { setFehler("Anhängen fehlgeschlagen: " + (err.message || err)); }
+                              }} />
+                            </label>
+                          )}
                           {b.quelle === "manuell" && <span style={{ marginLeft: 6, fontSize: 10.5, background: "#EEF0F3", padding: "1px 6px", borderRadius: 8 }}>manuell</span>}
                         </td>
                         <td className="mono" style={{ fontSize: 12, color: TEXT_MUTED }}>{b.importiertAm ? dmy(b.importiertAm.slice(0, 10)) : ""}</td>

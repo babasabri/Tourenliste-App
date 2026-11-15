@@ -145,6 +145,13 @@ export async function uploadDatei(file, lieferant) {
   if (error) throw new Error("Datei konnte nicht gespeichert werden: " + error.message);
   return pfad;
 }
+// PDF/Foto nachträglich an einen vorhandenen Beleg hängen
+export async function dateiAnhaengen(belegId, file, lieferant) {
+  const pfad = await uploadDatei(file, lieferant);
+  const { error } = await supabase.from("ersatzteil_belege").update({ datei_pfad: pfad, dateiname: file.name }).eq("id", belegId);
+  if (error) throw error;
+  return pfad;
+}
 // zeitlich begrenzter Link zum Ansehen (10 Minuten)
 export async function dateiLink(pfad) {
   const { data, error } = await supabase.storage.from("belege").createSignedUrl(pfad, 600);
