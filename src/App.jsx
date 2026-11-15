@@ -3504,6 +3504,9 @@ export default function TourenApp() {
                         <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>
                           Ø pro Tag <span className="mono" style={{ color: TEXT, fontWeight: 500 }}>{euro(b.proTag)}</span>
                         </span>
+                        <span style={{ fontSize: 11.5, color: TEXT_MUTED }}>
+                          Ø pro km <span className="mono" style={{ color: TEXT, fontWeight: 500 }}>{b.wochenKm > 0 ? euro(b.summe / b.wochenKm) + "/km" : "–"}</span>
+                        </span>
                         {inactive && (
                           <span style={{ background: "#EDEFF2", color: TEXT_MUTED, fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20 }}>
                             {b.status === "Inaktiv" ? "Steht" : b.status}
