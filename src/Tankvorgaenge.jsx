@@ -8,7 +8,7 @@
 // die km gefahren werden - über einen Monat oder ein Jahr gleicht sich das aus.
 
 import { useEffect, useMemo, useState } from "react";
-import { Upload, Loader2, Trash2, RefreshCw, CheckCircle2, AlertTriangle, Gauge } from "lucide-react";
+import { Upload, Loader2, Trash2, RefreshCw, CheckCircle2, AlertTriangle, Gauge, Fuel, Droplet, Receipt } from "lucide-react";
 import { parseTankbelegPdf } from "./tankpoolParser";
 import * as tdb from "./tankDb";
 
@@ -31,6 +31,21 @@ const KM_STATUS = {
   fehler: "Abruf fehlgeschlagen - erneut versuchen",
 };
 const KATEGORIE_LABEL = { diesel: "Diesel", adblue: "AdBlue", neben: "Nebenkosten" };
+// Farben je Sorte: Diesel bernstein, AdBlue blau, Nebenkosten grau
+const SORTE_FARBE = {
+  diesel: { bg: "#FFF1C2", fg: "#6B4E00", rand: "#E0A800" },
+  adblue: { bg: "#DCEBFF", fg: "#1D5FBF", rand: "#2F7BE0" },
+  neben: { bg: "#EEF0F3", fg: "#55606B", rand: "#B8C0C8" },
+};
+function SorteBadge({ kategorie, sorte }) {
+  const c = SORTE_FARBE[kategorie] || SORTE_FARBE.neben;
+  const Icon = kategorie === "diesel" ? Fuel : kategorie === "adblue" ? Droplet : Receipt;
+  return (
+    <span title={sorte || undefined} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, fontWeight: 600, padding: "2px 9px", borderRadius: 12, background: c.bg, color: c.fg, whiteSpace: "nowrap" }}>
+      <Icon size={12} /> {kategorie === "neben" ? sorte : KATEGORIE_LABEL[kategorie]}
+    </span>
+  );
+}
 
 const pad2 = (n) => String(n).padStart(2, "0");
 const isoOf = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -631,13 +646,13 @@ export default function Tankvorgaenge({ fleet, wochenKm, startFilter, onFilterCh
                 </thead>
                 <tbody>
                   {liste.map((t) => (
-                    <tr key={t.id} style={t.kategorie === "neben" ? { background: WARN_BG } : undefined}>
+                    <tr key={t.id} style={{ ...(t.kategorie === "neben" ? { background: WARN_BG } : {}), boxShadow: `inset 3px 0 0 ${(SORTE_FARBE[t.kategorie] || SORTE_FARBE.neben).rand}` }}>
                       <td className="mono">{dmy(t.datum)}</td>
                       <td className="mono">{t.zeit}</td>
                       <td className="mono">{t.lkw}</td>
                       <td><KarteBadge quelle={t.quelle} /></td>
                       <td>{t.station}</td>
-                      <td>{t.kategorie === "neben" ? t.sorte : KATEGORIE_LABEL[t.kategorie]}</td>
+                      <td><SorteBadge kategorie={t.kategorie} sorte={t.sorte} /></td>
                       <td className="mono" style={{ textAlign: "right" }}>{dez(t.menge)} {t.einheit}</td>
                       <td className="mono" style={{ textAlign: "right" }}>{t.einheit === "L" ? dez(t.preis, 4) : euro(t.preis)}</td>
                       <td className="mono" style={{ textAlign: "right" }}>{euro(t.wert)}</td>
