@@ -14,7 +14,7 @@ import { parseGutschriftPdf } from "./gutschriftParser";
 import { supabase } from "./supabaseClient";
 import FrachtbriefEingang from "./FrachtbriefEingang";
 import GutschriftZuweisen from "./GutschriftZuweisen";
-import { offenBetrag, formatFelder } from "./gutschriftLogik";
+import { offenBetrag, formatFelder, felderAusZeilen, FELD_LABEL, r2 } from "./gutschriftLogik";
 import Fuhrpark from "./Fuhrpark";
 import Abwesenheiten from "./Abwesenheiten";
 // Export-Bibliotheken (jsPDF, ExcelJS) sind vergleichsweise groß - werden per
@@ -696,6 +696,11 @@ export default function TourenApp() {
   const [gsZuweisen, setGsZuweisen] = useState(null);
   // Gutschrift-Historie (tour_gutschriften) der gerade bearbeiteten Tour.
   const [editGsHistory, setEditGsHistory] = useState(null);
+  // Gutschrift-Position, aus der das Bearbeiten-Fenster geöffnet wurde (für den
+  // Vergleich je Kostenart im Fenster): { positionId?, orderNr, betrag, zeilen,
+  // belegNr }. gsAbrechnen = Häkchen "beim Speichern abrechnen" (Prüfliste).
+  const [editGsVergleich, setEditGsVergleich] = useState(null);
+  const [gsAbrechnen, setGsAbrechnen] = useState(true);
   const [editId, setEditId] = useState(null);
   const [editForm, setEditForm] = useState(null);
   useEffect(() => {
@@ -1517,6 +1522,7 @@ export default function TourenApp() {
       return;
     }
     openEdit(tour);
+    setEditGsVergleich({ orderNr: p.orderNr, betrag: p.betrag, zeilen: p.zeilen, belegNr: gsPreview?.meta?.belegNr });
   }
 
   // Gleicht die Positionen der Gutschrift-Vorschau erneut gegen die aktuellen
@@ -1634,6 +1640,10 @@ export default function TourenApp() {
     }
     openEdit(tour);
     setEditFromGutschriftId(r.id);
+    setEditGsVergleich({
+      positionId: r.id, orderNr: r.order_nr, betrag: r.betrag_gutschrift, zeilen: r.zeilen,
+      belegNr: r.gutschrift_imports?.beleg_nr,
+    });
   }
 
   function doSaveTour() {
@@ -1696,6 +1706,8 @@ export default function TourenApp() {
     setEditId(t.id);
     setEditForm({ ...t });
     setEditFromGutschriftId(null);
+    setEditGsVergleich(null);
+    setGsAbrechnen(true);
     setConfirmDelete(false);
     setEditErrors([]);
     setEditSaveNote("");
@@ -1722,9 +1734,24 @@ export default function TourenApp() {
     // mit dem Speichern als erledigt (bessere Übersicht - kein zusätzlicher
     // Klick auf "Erledigt" mehr nötig).
     if (editFromGutschriftId) {
-      handleGutschriftErledigt(editFromGutschriftId);
+      const posId = editFromGutschriftId;
+      const passt = editGsVergleich && Math.abs(r2(gesamt(toSave)) - r2(editGsVergleich.betrag)) <= 0.01;
+      if (passt && gsAbrechnen) {
+        // Summe passt jetzt zur Gutschrift -> Tour direkt mit dieser Gutschrift
+        // abrechnen (Status, Gutschrift-Nr., Historie), Zeile wird erledigt.
+        const betrag = r2(editGsVergleich.betrag);
+        saving.then((ok) => {
+          if (ok === false) return;
+          db.zuweisenGutschriftPosition(posId, [{ tourId: toSave.id, betrag, betragTour: betrag, teil: false }])
+            .then(({ touren, review }) => { setTours(touren); setGsReview(review); })
+            .catch((err) => setGsReviewError(err.message || "Abrechnen fehlgeschlagen."));
+        });
+      } else {
+        handleGutschriftErledigt(posId);
+      }
       setEditFromGutschriftId(null);
     }
+    setEditGsVergleich(null);
     setEditId(null);
     setEditForm(null);
   }
@@ -4131,10 +4158,10 @@ export default function TourenApp() {
 
       {editId && editForm && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(15,42,67,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
-          <div style={{ background: CARD, borderRadius: 12, padding: 24, width: 560, maxHeight: "85vh", overflowY: "auto" }}>
+          <div style={{ background: CARD, borderRadius: 12, padding: 24, width: editGsVergleich ? 680 : 560, maxWidth: "calc(100vw - 24px)", maxHeight: "85vh", overflowY: "auto" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <div style={{ fontSize: 15, fontWeight: 600 }}>Tour bearbeiten</div>
-              <button className="ghost" style={{ padding: 6 }} onClick={() => { setEditId(null); setEditForm(null); setEditFromGutschriftId(null); setConfirmDelete(false); setEditErrors([]); setEditSaveNote(""); }}><X size={15} /></button>
+              <button className="ghost" style={{ padding: 6 }} onClick={() => { setEditId(null); setEditForm(null); setEditFromGutschriftId(null); setEditGsVergleich(null); setConfirmDelete(false); setEditErrors([]); setEditSaveNote(""); }}><X size={15} /></button>
             </div>
             {editForm.gutschriftNr && (() => {
               const teil = editForm.status === "Teilabgerechnet";
@@ -4165,6 +4192,84 @@ export default function TourenApp() {
                     <div style={{ marginTop: 4, fontWeight: 600 }}>
                       Noch offen: {euro(offenBetrag(editForm))}{formatFelder(editForm.offenFelder) ? ` (${formatFelder(editForm.offenFelder)})` : ""}
                     </div>
+                  )}
+                </div>
+              );
+            })()}
+            {editGsVergleich && (() => {
+              // Vergleich je Kostenart: aktuelle Werte im Formular (live) gegen die
+              // Zeilen der Gutschrift-Position.
+              const gsF = felderAusZeilen(editGsVergleich.zeilen);
+              const felder = [...COSTFIELDS, "sonstige"].filter((k) => r2(editForm[k]) || r2(gsF[k]));
+              const rows = felder.map((k) => {
+                const tour = k === "sonstige" ? 0 : r2(editForm[k]);
+                const gs = r2(gsF[k]);
+                return { k, tour, gs, diff: r2(gs - tour) };
+              });
+              const sumTour = r2(gesamt(editForm));
+              const sumGs = r2(editGsVergleich.betrag);
+              const passt = Math.abs(sumGs - sumTour) <= 0.01;
+              return (
+                <div style={{ border: `1px solid ${passt ? "#BFE5D3" : "#F3C7A8"}`, borderRadius: 10, padding: "10px 12px", marginBottom: 14, background: passt ? "#F3FBF7" : "#FFF7F1" }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8, color: passt ? SUCCESS : "#7A2E00" }}>
+                    {passt ? "✓ Summe passt jetzt zur Gutschrift" : `Abweichung zur Gutschrift: ${euro(r2(sumGs - sumTour))}`}
+                    <span style={{ fontWeight: 400, color: TEXT_MUTED }}> · Pos. {editGsVergleich.orderNr}{editGsVergleich.belegNr ? ` · GS ${editGsVergleich.belegNr}` : ""}</span>
+                  </div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ fontSize: 12 }}>
+                      <thead>
+                        <tr>
+                          <th></th>
+                          {rows.map((r) => <th key={r.k} style={{ textAlign: "right" }}>{FELD_LABEL[r.k]}</th>)}
+                          <th style={{ textAlign: "right" }}>Summe</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td style={{ fontWeight: 600 }}>Tour</td>
+                          {rows.map((r) => <td key={r.k} className="mono" style={{ textAlign: "right" }}>{euro(r.tour)}</td>)}
+                          <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>{euro(sumTour)}</td>
+                        </tr>
+                        <tr>
+                          <td style={{ fontWeight: 600 }}>Gutschrift</td>
+                          {rows.map((r) => <td key={r.k} className="mono" style={{ textAlign: "right" }}>{euro(r.gs)}</td>)}
+                          <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>{euro(sumGs)}</td>
+                        </tr>
+                        <tr>
+                          <td style={{ fontWeight: 600 }}>Differenz</td>
+                          {rows.map((r) => (
+                            <td key={r.k} className="mono" style={{ textAlign: "right", fontWeight: Math.abs(r.diff) > 0.01 ? 700 : 400, color: Math.abs(r.diff) > 0.01 ? DANGER : SUCCESS }}>
+                              {Math.abs(r.diff) > 0.01 ? (
+                                <>
+                                  {r.diff > 0 ? "+" : ""}{euro(r.diff)}
+                                  {r.k !== "sonstige" && (
+                                    <div>
+                                      <button type="button" className="ghost" style={{ padding: "1px 6px", fontSize: 10.5, marginTop: 2 }}
+                                        title="Betrag aus der Gutschrift in die Tour übernehmen"
+                                        onClick={() => setEditForm({ ...editForm, [r.k]: String(r.gs) })}>
+                                        übernehmen
+                                      </button>
+                                    </div>
+                                  )}
+                                </>
+                              ) : "✓"}
+                            </td>
+                          ))}
+                          <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: passt ? SUCCESS : DANGER }}>{passt ? "✓" : euro(r2(sumGs - sumTour))}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  {Array.isArray(editGsVergleich.zeilen) && editGsVergleich.zeilen.length > 0 && (
+                    <div style={{ fontSize: 11, color: TEXT_MUTED, marginTop: 6 }}>
+                      Zeilen laut Gutschrift: {editGsVergleich.zeilen.map((z, i) => <span key={i}>{i > 0 ? " · " : ""}{z.label} {euro(z.betrag)}</span>)}
+                    </div>
+                  )}
+                  {editGsVergleich.positionId && passt && (
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 12.5, cursor: "pointer" }}>
+                      <input type="checkbox" style={{ width: "auto", margin: 0 }} checked={gsAbrechnen} onChange={(e) => setGsAbrechnen(e.target.checked)} />
+                      Beim Speichern mit dieser Gutschrift abrechnen (Status "Abgerechnet" + Gutschrift-Nr.)
+                    </label>
                   )}
                 </div>
               );
@@ -4261,7 +4366,18 @@ export default function TourenApp() {
                     {COSTFIELD_LABELS[k]}
                     {(k === "fracht" || k === "diesel") && !editForm.andererAuftraggeber && <span style={{ color: TEXT_MUTED }}> · automatisch berechnet</span>}
                   </label>
-                  <input type="number" value={editForm[k]} disabled={locked} style={lockStyle(locked)} onChange={(e) => setEditForm({ ...editForm, [k]: e.target.value })} />
+                  <input type="number" value={editForm[k]} disabled={locked}
+                    style={(() => {
+                      const base = lockStyle(locked);
+                      if (!editGsVergleich) return base;
+                      const gs = r2(felderAusZeilen(editGsVergleich.zeilen)[k]);
+                      if (Math.abs(gs - r2(editForm[k])) <= 0.01) return base;
+                      return { ...(base || {}), borderColor: DANGER, background: "#FFF3EE" };
+                    })()}
+                    onChange={(e) => setEditForm({ ...editForm, [k]: e.target.value })} />
+                  {editGsVergleich && Math.abs(r2(felderAusZeilen(editGsVergleich.zeilen)[k]) - r2(editForm[k])) > 0.01 && (
+                    <div style={{ fontSize: 10.5, color: DANGER, marginTop: 2 }}>Gutschrift: {euro(felderAusZeilen(editGsVergleich.zeilen)[k] || 0)}</div>
+                  )}
                 </div>
                 );
               })}
