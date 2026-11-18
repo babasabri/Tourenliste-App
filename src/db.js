@@ -467,6 +467,17 @@ export async function zuweisenGutschriftPosition(positionId, zuordnung) {
   return { touren, review };
 }
 
+// Verknüpft eine Prüflisten-Position nur mit Tour(en), ohne abzurechnen - die
+// Position bleibt als Differenz zur Kontrolle in der Prüfliste.
+export async function verknuepfenGutschriftPosition(positionId, tourIds) {
+  const { error } = await supabase.rpc("gutschrift_position_verknuepfen", {
+    p_position_id: positionId,
+    p_tour_ids: tourIds,
+  });
+  if (error) throw error;
+  return fetchOffeneGutschriftPositionen();
+}
+
 // Alle Gutschriften (auch Teilgutschriften) einer Tour, älteste zuerst.
 export async function fetchTourGutschriften(tourId) {
   const { data, error } = await supabase

@@ -39,7 +39,10 @@ export default function GutschriftZuweisen({ position, tours, vorbelegt = [], be
   const [query, setQuery] = useState(position.orderNr || "");
   const [auchAbgerechnet, setAuchAbgerechnet] = useState(false);
   const [selected, setSelected] = useState(() => new Set(vorbelegt));
-  const [modus, setModus] = useState("teil"); // "teil" | "voll" (nur relevant, wenn Gutschrift zu wenig zahlt)
+  // Bei Differenz: "zuordnen" (Standard: nur verknüpfen, Differenz bleibt in der
+  // Prüfliste zur Kontrolle), "teil" (Teilgutschrift, nur wenn zu wenig gezahlt)
+  // oder "voll" (trotzdem voll abrechnen, Differenz ausbuchen).
+  const [modus, setModus] = useState("zuordnen");
   const [restTourWahl, setRestTourWahl] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -71,7 +74,6 @@ export default function GutschriftZuweisen({ position, tours, vorbelegt = [], be
   const differenz = r2(betragGs - summeGewaehlt); // < 0: Gutschrift zahlt weniger
   const passt = gewaehlt.length > 0 && Math.abs(differenz) <= 0.01;
   const zuWenig = gewaehlt.length > 0 && differenz < -0.01;
-  const zuViel = gewaehlt.length > 0 && differenz > 0.01;
   const totalOffen = zuWenig ? -differenz : 0;
 
   const vergleich = useMemo(
@@ -99,7 +101,9 @@ export default function GutschriftZuweisen({ position, tours, vorbelegt = [], be
   const restTour = gewaehlt.find((t) => t.id === restTourId);
   const restBuchung = restTour ? r2(offenBetrag(restTour) - totalOffen) : 0;
   const teilMoeglich = zuWenig && restTour && restBuchung >= -0.01;
+  const hatDifferenz = gewaehlt.length > 0 && !passt;
   const teilAktiv = zuWenig && modus === "teil";
+  const nurZuordnen = hatDifferenz && (modus === "zuordnen" || (modus === "teil" && !zuWenig));
 
   function toggle(id) {
     setSelected((prev) => {
@@ -130,7 +134,9 @@ export default function GutschriftZuweisen({ position, tours, vorbelegt = [], be
     try {
       await onConfirm({
         tourIds: gewaehlt.map((t) => t.id),
-        zuordnung: buildZuordnung(),
+        nurZuordnen,
+        differenz,
+        zuordnung: nurZuordnen ? [] : buildZuordnung(),
         teil: teilAktiv,
         betragTour: summeGewaehlt,
         offen: teilAktiv ? { betrag: totalOffen, felder: fehlend } : null,
@@ -141,7 +147,9 @@ export default function GutschriftZuweisen({ position, tours, vorbelegt = [], be
     }
   }
 
-  const btnLabel = teilAktiv
+  const btnLabel = nurZuordnen
+    ? "Zuordnen (Differenz prüfen)"
+    : teilAktiv
     ? "Teilgutschrift übernehmen"
     : gewaehlt.length > 1 ? `${gewaehlt.length} Touren zuweisen` : "Tour zuweisen";
 
@@ -263,54 +271,67 @@ export default function GutschriftZuweisen({ position, tours, vorbelegt = [], be
           </div>
         )}
 
-        {/* Auswahl bei zu wenig bezahlt: Teilgutschrift oder voll abrechnen */}
-        {zuWenig && (
+        {/* Bei Differenz: was soll passieren? Standard = nur zuordnen und kontrollieren */}
+        {hatDifferenz && (
           <div style={{ marginTop: 12, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "12px 14px", fontSize: 13 }}>
+            <div style={{ fontWeight: 600, marginBottom: 8, color: DANGER, display: "flex", alignItems: "center", gap: 6 }}>
+              <AlertTriangle size={15} /> Differenz {euro(differenz)} - {zuWenig ? "Gutschrift zahlt weniger" : "Gutschrift zahlt mehr"} als die Tour(en)
+            </div>
             <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer", marginBottom: 8 }}>
-              <input type="radio" checked={modus === "teil"} onChange={() => setModus("teil")} style={{ marginTop: 3 }} />
+              <input type="radio" checked={modus === "zuordnen"} onChange={() => setModus("zuordnen")} style={{ marginTop: 3 }} />
               <span>
-                <b>Teilgutschrift</b> - erhaltene {euro(betragGs)} verbuchen, Tour wird <b>Teilabgerechnet</b>.
-                Offen bleibt <b className="mono">{euro(totalOffen)}</b>{formatFelder(fehlend) ? ` (${formatFelder(fehlend)})` : ""} und
-                erscheint unter Reklamationen. Kommt der Rest später mit derselben Auftrags-Nr., wird er automatisch zugeordnet.
+                <b>Nur zuordnen und Differenz prüfen</b> (empfohlen) - Tour wird mit der Position verknüpft, bleibt aber
+                unverändert. Die Position steht weiter als <b>Differenz</b> in der Prüfliste; über den Stift siehst du den
+                Vergleich je Kostenart, korrigierst die Tour und rechnest beim Speichern ab.
               </span>
             </label>
-            {modus === "teil" && gewaehlt.length > 1 && (
-              <div style={{ margin: "0 0 10px 26px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <span>Offener Betrag bleibt bei Tour:</span>
-                <select value={restTourId || ""} onChange={(e) => setRestTourWahl(e.target.value)} style={{ width: "auto" }}>
-                  {gewaehlt.map((t) => (
-                    <option key={t.id} value={t.id}>{dmy(t.datum)} · {t.lkw} · {t.containerNr || t.auftragsNr} · {euro(offenBetrag(t))}</option>
-                  ))}
-                </select>
-                <span style={{ fontSize: 12, color: TEXT_MUTED }}>die anderen werden voll abgerechnet</span>
-              </div>
-            )}
-            {modus === "teil" && !teilMoeglich && (
-              <div style={{ margin: "0 0 10px 26px", color: DANGER, fontSize: 12.5 }}>
-                Der offene Betrag ({euro(totalOffen)}) ist größer als der Betrag der gewählten Tour - bitte andere Tour wählen oder Auswahl prüfen.
-              </div>
+            {zuWenig && (
+              <>
+                <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer", marginBottom: 8 }}>
+                  <input type="radio" checked={modus === "teil"} onChange={() => setModus("teil")} style={{ marginTop: 3 }} />
+                  <span>
+                    <b>Teilgutschrift</b> - erhaltene {euro(betragGs)} verbuchen, Tour wird <b>Teilabgerechnet</b>.
+                    Offen bleibt <b className="mono">{euro(totalOffen)}</b>{formatFelder(fehlend) ? ` (${formatFelder(fehlend)})` : ""} und
+                    erscheint unter Reklamationen. Kommt der Rest später mit derselben Auftrags-Nr., wird er automatisch zugeordnet.
+                  </span>
+                </label>
+                {modus === "teil" && gewaehlt.length > 1 && (
+                  <div style={{ margin: "0 0 10px 26px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span>Offener Betrag bleibt bei Tour:</span>
+                    <select value={restTourId || ""} onChange={(e) => setRestTourWahl(e.target.value)} style={{ width: "auto" }}>
+                      {gewaehlt.map((t) => (
+                        <option key={t.id} value={t.id}>{dmy(t.datum)} · {t.lkw} · {t.containerNr || t.auftragsNr} · {euro(offenBetrag(t))}</option>
+                      ))}
+                    </select>
+                    <span style={{ fontSize: 12, color: TEXT_MUTED }}>die anderen werden voll abgerechnet</span>
+                  </div>
+                )}
+                {modus === "teil" && !teilMoeglich && (
+                  <div style={{ margin: "0 0 10px 26px", color: DANGER, fontSize: 12.5 }}>
+                    Der offene Betrag ({euro(totalOffen)}) ist größer als der Betrag der gewählten Tour - bitte andere Tour wählen oder Auswahl prüfen.
+                  </div>
+                )}
+              </>
             )}
             <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer" }}>
               <input type="radio" checked={modus === "voll"} onChange={() => setModus("voll")} style={{ marginTop: 3 }} />
-              <span><b>Voll abrechnen</b> - Differenz von {euro(totalOffen)} wird nicht weiter verfolgt, Tour(en) werden <b>Abgerechnet</b>.</span>
+              <span><b>Trotzdem voll abrechnen</b> - Differenz von {euro(differenz)} wird nicht weiter verfolgt, Tour(en) werden sofort <b>Abgerechnet</b>.</span>
             </label>
           </div>
         )}
 
-        {!zuWenig && (
+        {!hatDifferenz && (
           <div style={{
             marginTop: 12, fontSize: 12.5, borderRadius: 8, padding: "10px 14px",
-            background: gewaehlt.length === 0 ? "#F5F6F8" : passt ? "#E7F6EF" : WARN_BG,
-            color: gewaehlt.length === 0 ? TEXT_MUTED : passt ? SUCCESS : AMBER_DARK,
+            background: gewaehlt.length === 0 ? "#F5F6F8" : "#E7F6EF",
+            color: gewaehlt.length === 0 ? TEXT_MUTED : SUCCESS,
             display: "flex", alignItems: "center", gap: 8,
           }}>
             {gewaehlt.length === 0 ? (
               <>Tour(en) anklicken, die zu dieser Position gehören. Bei gleicher Auftrags-Nr. einfach alle zugehörigen Touren auswählen.</>
-            ) : passt ? (
+            ) : (
               <><CheckCircle2 size={15} /> {gewaehlt.length} Tour(en) ausgewählt · Summe {euro(summeGewaehlt)} = Betrag Gutschrift</>
-            ) : zuViel ? (
-              <><AlertTriangle size={15} /> Gutschrift zahlt {euro(differenz)} mehr als die Tour(en) - evtl. fehlt ein Kostenfeld in der Tour (z. B. Wartezeit). Zuweisen ist trotzdem möglich, ggf. Tour danach anpassen.</>
-            ) : null}
+            )}
           </div>
         )}
 

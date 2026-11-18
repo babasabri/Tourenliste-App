@@ -1574,7 +1574,7 @@ export default function TourenApp() {
     });
   }
 
-  async function confirmZuweisen({ tourIds, zuordnung, teil, betragTour, offen }) {
+  async function confirmZuweisen({ tourIds, zuordnung, teil, betragTour, offen, nurZuordnen }) {
     const z = gsZuweisen;
     if (!z) return;
     if (z.quelle === "preview") {
@@ -1582,7 +1582,9 @@ export default function TourenApp() {
         if (!prev) return prev;
         const positionen = prev.positionen.map((p, i) => (i !== z.index ? p : {
           ...p,
-          status: teil ? "teilabgerechnet" : "abgerechnet",
+          // nurZuordnen: Differenz bleibt bestehen -> Position wird als
+          // "differenz" (mit verknüpfter Tour) übernommen, nichts abgerechnet.
+          status: nurZuordnen ? "differenz" : teil ? "teilabgerechnet" : "abgerechnet",
           manuell: true,
           tourIds,
           zuordnung,
@@ -1595,9 +1597,13 @@ export default function TourenApp() {
         return { ...prev, positionen };
       });
     } else {
-      const { touren, review } = await db.zuweisenGutschriftPosition(z.id, zuordnung);
-      setTours(touren);
-      setGsReview(review);
+      if (nurZuordnen) {
+        setGsReview(await db.verknuepfenGutschriftPosition(z.id, tourIds));
+      } else {
+        const { touren, review } = await db.zuweisenGutschriftPosition(z.id, zuordnung);
+        setTours(touren);
+        setGsReview(review);
+      }
     }
     setGsZuweisen(null);
   }
@@ -3114,7 +3120,12 @@ export default function TourenApp() {
                                     Teilgutschrift - offen bleibt {euro(p.offen?.betrag)}{formatFelder(p.offen?.felder) ? ` (${formatFelder(p.offen.felder)})` : ""}
                                   </span>
                                 )}
-                                {p.manuell && p.status !== "teilabgerechnet" && (
+                                {p.manuell && p.status === "differenz" && (
+                                  <span style={{ color: DANGER, fontWeight: 600 }}>
+                                    Zugeordnet ({p.tourIds.length} Tour{p.tourIds.length > 1 ? "en" : ""}) - Differenz bitte über den Stift prüfen
+                                  </span>
+                                )}
+                                {p.manuell && p.status === "abgerechnet" && (
                                   <span style={{ color: MARINE, fontWeight: 600 }}>
                                     Manuell zugewiesen: {p.tourIds.length} Tour{p.tourIds.length > 1 ? "en" : ""}
                                     {p.differenz && Math.abs(p.differenz) > 0.01 ? " (Differenz ausgebucht)" : ""}
