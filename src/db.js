@@ -403,6 +403,10 @@ export async function applyGutschriftImport(meta, positionen) {
       betrag: p.betrag,
       zeilen: p.zeilen,
       tourId: p.tourId || "",
+      // Manuelle Zuweisung (auch mehrere Touren, z. B. gleiche Auftrags-Nr.
+      // als eine Position abgerechnet) - siehe Zuweisungs-Dialog.
+      tourIds: p.tourIds && p.tourIds.length ? p.tourIds : (p.tourId ? [p.tourId] : []),
+      manuell: !!p.manuell,
       betragTour: p.betragTour === null || p.betragTour === undefined ? "" : p.betragTour,
       differenz: p.differenz === null || p.differenz === undefined ? "" : p.differenz,
       kandidatenAnzahl: p.kandidatenAnzahl || 0,
@@ -434,6 +438,19 @@ export async function fetchGutschriftImports() {
     .order("created_at", { ascending: false });
   if (error) throw error;
   return data;
+}
+
+// Weist eine Prüflisten-Position nachträglich einer oder mehreren Touren zu:
+// Touren -> "Abgerechnet" + Gutschrift-Nr./-Datum des Imports, Position ->
+// abgerechnet + erledigt (atomar über RPC gutschrift_position_zuweisen).
+export async function zuweisenGutschriftPosition(positionId, tourIds) {
+  const { error } = await supabase.rpc("gutschrift_position_zuweisen", {
+    p_position_id: positionId,
+    p_tour_ids: tourIds,
+  });
+  if (error) throw error;
+  const [touren, review] = await Promise.all([fetchTours(), fetchOffeneGutschriftPositionen()]);
+  return { touren, review };
 }
 
 export async function markGutschriftPositionErledigt(id, notiz) {

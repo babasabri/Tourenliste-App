@@ -7,12 +7,13 @@ import {
   LayoutDashboard, Truck, PlusCircle, Search as SearchIcon, Users,
   Fuel, X, Save, Trash2, Pencil, AlertTriangle, CalendarClock, Upload, ListChecks, RefreshCw,
   TrendingUp, MapPin, FileDown, FileText, FileSpreadsheet, FileScan, Loader2, Menu,
-  Receipt, CheckCircle2, HelpCircle, Play, Inbox, Coins, Gauge,
+  Receipt, CheckCircle2, HelpCircle, Play, Inbox, Coins, Gauge, Link2, Undo2,
 } from "lucide-react";
 import * as db from "./db";
 import { parseGutschriftPdf } from "./gutschriftParser";
 import { supabase } from "./supabaseClient";
 import FrachtbriefEingang from "./FrachtbriefEingang";
+import GutschriftZuweisen from "./GutschriftZuweisen";
 import Fuhrpark from "./Fuhrpark";
 import Abwesenheiten from "./Abwesenheiten";
 // Export-Bibliotheken (jsPDF, ExcelJS) sind vergleichsweise groß - werden per
@@ -687,6 +688,9 @@ export default function TourenApp() {
   const [gsReview, setGsReview] = useState([]);
   const [gsReviewLoading, setGsReviewLoading] = useState(false);
   const [gsReviewError, setGsReviewError] = useState("");
+  // Dialog "Touren manuell zuweisen": { quelle: "preview"|"review", index
+  // (Vorschau) bzw. id (Prüfliste), position, vorbelegt, belegtIds }.
+  const [gsZuweisen, setGsZuweisen] = useState(null);
   const [editId, setEditId] = useState(null);
   const [editForm, setEditForm] = useState(null);
   // Gesetzt, wenn das Bearbeiten-Fenster über die Gutschriften-Prüfliste
@@ -1508,9 +1512,90 @@ export default function TourenApp() {
   async function refreshGsPreview() {
     if (!gsPreview) return;
     try {
-      const matched = await db.matchGutschriftPositionen(gsPreview.positionen);
-      setGsPreview((prev) => (prev ? { ...prev, positionen: matched } : prev));
+      // Manuell zugewiesene Positionen bleiben unverändert stehen, nur der Rest
+      // wird neu abgeglichen.
+      const auto = gsPreview.positionen.filter((p) => !p.manuell);
+      const matched = await db.matchGutschriftPositionen(auto);
+      let k = 0;
+      const merged = gsPreview.positionen.map((p) => (p.manuell ? p : matched[k++]));
+      setGsPreview((prev) => (prev ? { ...prev, positionen: merged } : prev));
     } catch { /* Vorschau bleibt dann einfach auf altem Stand */ }
+  }
+
+  // ------------------------------------------ Manuelle Zuweisung von Touren --
+  // Vorbelegung bei mehreren offenen Touren mit derselben Auftrags-Nr.: passt
+  // ihre Summe genau zum Gutschrift-Betrag (typischer Fall: Contargo rechnet
+  // sie als eine Position ab), sind alle schon angehakt - der Nutzer
+  // bestätigt nur noch. Sonst ist nichts vorausgewählt.
+  function vorbelegungFuer(orderNr, betrag) {
+    const kandidaten = tours.filter((t) => t.auftragsNr === orderNr && t.status !== "Abgerechnet");
+    if (kandidaten.length === 0) return [];
+    const sum = Math.round(kandidaten.reduce((s, t) => s + gesamt(t), 0) * 100) / 100;
+    return Math.abs(sum - (Number(betrag) || 0)) <= 0.01 ? kandidaten.map((t) => t.id) : [];
+  }
+
+  function openZuweisenPreview(p, index) {
+    const vorbelegt = p.tourIds && p.tourIds.length ? p.tourIds
+      : p.tourId ? [p.tourId] : vorbelegungFuer(p.orderNr, p.betrag);
+    const belegtIds = gsPreview.positionen.flatMap((q, i) => (i === index ? [] : (q.tourIds && q.tourIds.length ? q.tourIds : q.tourId ? [q.tourId] : [])));
+    setGsZuweisen({
+      quelle: "preview", index, vorbelegt, belegtIds,
+      position: { ...p, belegNr: gsPreview.meta.belegNr },
+    });
+  }
+
+  function openZuweisenReview(r) {
+    const vorbelegt = r.tour_ids && r.tour_ids.length ? r.tour_ids
+      : r.tour_id ? [r.tour_id] : vorbelegungFuer(r.order_nr, r.betrag_gutschrift);
+    setGsZuweisen({
+      quelle: "review", id: r.id, vorbelegt, belegtIds: [],
+      position: {
+        orderNr: r.order_nr, kunde: r.kunde_gutschrift, betrag: r.betrag_gutschrift,
+        zeilen: r.zeilen, gestellungsdatum: r.gestellungsdatum, belegNr: r.gutschrift_imports?.beleg_nr,
+      },
+    });
+  }
+
+  async function confirmZuweisen(tourIds) {
+    const z = gsZuweisen;
+    if (!z) return;
+    if (z.quelle === "preview") {
+      const gew = tours.filter((t) => tourIds.includes(t.id));
+      const betragTour = Math.round(gew.reduce((s, t) => s + gesamt(t), 0) * 100) / 100;
+      setGsPreview((prev) => {
+        if (!prev) return prev;
+        const positionen = prev.positionen.map((p, i) => (i !== z.index ? p : {
+          ...p,
+          status: "abgerechnet",
+          manuell: true,
+          tourIds,
+          tourId: tourIds.length === 1 ? tourIds[0] : null,
+          betragTour,
+          differenz: Math.round(((Number(p.betrag) || 0) - betragTour) * 100) / 100,
+          kandidatenAnzahl: tourIds.length,
+        }));
+        return { ...prev, positionen };
+      });
+    } else {
+      const { touren, review } = await db.zuweisenGutschriftPosition(z.id, tourIds);
+      setTours(touren);
+      setGsReview(review);
+    }
+    setGsZuweisen(null);
+  }
+
+  // Hebt eine manuelle Zuweisung in der Vorschau wieder auf (Position wird
+  // erneut automatisch abgeglichen).
+  async function undoZuweisenPreview(index) {
+    const p = gsPreview?.positionen[index];
+    if (!p) return;
+    const { manuell, tourIds, ...rest } = p;
+    try {
+      const [neu] = await db.matchGutschriftPositionen([rest]);
+      setGsPreview((prev) => (prev ? { ...prev, positionen: prev.positionen.map((q, i) => (i === index ? neu : q)) } : prev));
+    } catch (err) {
+      setGsError(err.message || "Zuweisung konnte nicht aufgehoben werden.");
+    }
   }
 
   async function handleGutschriftErledigt(id) {
@@ -2962,13 +3047,29 @@ export default function TourenApp() {
                                 {p.differenz === null ? "–" : euro(p.differenz)}
                               </td>
                               <td style={{ fontSize: 11.5, color: TEXT_MUTED }}>
-                                {p.status === "mehrdeutig" && `${p.kandidatenAnzahl} offene Touren mit dieser Nr. - bitte manuell prüfen`}
-                                {p.status === "nicht_gefunden" && "Keine offene Tour mit dieser Auftragsnummer gefunden"}
+                                {p.manuell && (
+                                  <span style={{ color: MARINE, fontWeight: 600 }}>
+                                    Manuell zugewiesen: {p.tourIds.length} Tour{p.tourIds.length > 1 ? "en" : ""}
+                                    {p.differenz && Math.abs(p.differenz) > 0.01 ? " (mit Differenz)" : ""}
+                                  </span>
+                                )}
+                                {!p.manuell && p.status === "mehrdeutig" && `${p.kandidatenAnzahl} offene Touren mit dieser Nr. - über "Zuweisen" auswählen`}
+                                {!p.manuell && p.status === "nicht_gefunden" && "Keine offene Tour mit dieser Auftragsnummer - über \"Zuweisen\" manuell suchen"}
                               </td>
-                              <td>
+                              <td style={{ whiteSpace: "nowrap" }}>
                                 {p.tourId && (
                                   <button className="ghost" style={{ padding: "4px 8px" }} onClick={() => openEditFromPreview(p)} title="Tour bearbeiten">
                                     <Pencil size={13} />
+                                  </button>
+                                )}
+                                {(p.status !== "abgerechnet" || p.manuell) && (
+                                  <button className="ghost" style={{ padding: "4px 8px", marginLeft: 4 }} onClick={() => openZuweisenPreview(p, i)} title="Tour(en) manuell dieser Position zuweisen">
+                                    <Link2 size={13} /> {p.manuell ? "Ändern" : "Zuweisen"}
+                                  </button>
+                                )}
+                                {p.manuell && (
+                                  <button className="ghost" style={{ padding: "4px 8px", marginLeft: 4 }} onClick={() => undoZuweisenPreview(i)} title="Manuelle Zuweisung aufheben">
+                                    <Undo2 size={13} />
                                   </button>
                                 )}
                               </td>
@@ -2980,7 +3081,7 @@ export default function TourenApp() {
                   </div>
 
                   <button className="primary" disabled={blockiert || gsApplying} onClick={handleGutschriftApply} style={(blockiert || gsApplying) ? { opacity: 0.6, cursor: "default" } : undefined}>
-                    <CheckCircle2 size={15} /> {gsApplying ? "Übernehme …" : `Übernehmen (${counts.abgerechnet.length} Touren werden auf "Abgerechnet" gesetzt)`}
+                    <CheckCircle2 size={15} /> {gsApplying ? "Übernehme …" : `Übernehmen (${counts.abgerechnet.reduce((n, p) => n + (p.tourIds && p.tourIds.length ? p.tourIds.length : p.tourId ? 1 : 0), 0)} Touren werden auf "Abgerechnet" gesetzt)`}
                   </button>
                 </div>
               );
@@ -3015,9 +3116,9 @@ export default function TourenApp() {
                       {gsReview.map((r) => (
                         <tr
                           key={r.id}
-                          onDoubleClick={() => openEditFromGutschrift(r)}
-                          style={r.tour_id ? { cursor: "pointer" } : undefined}
-                          title={r.tour_id ? "Doppelklick zum Bearbeiten der Tour" : "Mehrere/keine passende Tour - bitte über Suche prüfen"}
+                          onDoubleClick={() => (r.tour_id ? openEditFromGutschrift(r) : openZuweisenReview(r))}
+                          style={{ cursor: "pointer" }}
+                          title={r.tour_id ? "Doppelklick zum Bearbeiten der Tour" : "Doppelklick, um Tour(en) manuell zuzuweisen"}
                         >
                           <td><GutschriftStatusBadge status={r.status} /></td>
                           <td className="mono">{r.order_nr}</td>
@@ -3028,7 +3129,10 @@ export default function TourenApp() {
                           <td style={{ fontSize: 11.5, color: TEXT_MUTED }}>
                             {r.gutschrift_imports?.beleg_nr || "–"}{r.gutschrift_imports?.rg_datum ? ` · ${formatDateDMY(r.gutschrift_imports.rg_datum)}` : ""}
                           </td>
-                          <td style={{ display: "flex", gap: 4 }}>
+                          <td style={{ display: "flex", gap: 4, whiteSpace: "nowrap" }}>
+                            <button className="ghost" style={{ padding: "4px 8px" }} onClick={() => openZuweisenReview(r)} title="Tour(en) manuell zuweisen - Touren werden auf Abgerechnet gesetzt und bekommen die Gutschrift-Nr.">
+                              <Link2 size={13} /> Zuweisen
+                            </button>
                             {r.tour_id && (
                               <button className="ghost" style={{ padding: "4px 8px" }} onClick={() => openEditFromGutschrift(r)} title="Tour bearbeiten">
                                 <Pencil size={13} />
@@ -3963,6 +4067,18 @@ export default function TourenApp() {
             </div>
           </div>
         </div>
+      )}
+
+      {gsZuweisen && (
+        <GutschriftZuweisen
+          key={`${gsZuweisen.quelle}-${gsZuweisen.index ?? gsZuweisen.id}`}
+          position={gsZuweisen.position}
+          tours={tours}
+          vorbelegt={gsZuweisen.vorbelegt}
+          belegtIds={gsZuweisen.belegtIds}
+          onClose={() => setGsZuweisen(null)}
+          onConfirm={confirmZuweisen}
+        />
       )}
 
       {editId && editForm && (
