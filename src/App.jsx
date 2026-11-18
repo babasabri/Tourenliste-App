@@ -14,6 +14,7 @@ import { parseGutschriftPdf } from "./gutschriftParser";
 import { supabase } from "./supabaseClient";
 import FrachtbriefEingang from "./FrachtbriefEingang";
 import GutschriftZuweisen from "./GutschriftZuweisen";
+import { offenBetrag, formatFelder } from "./gutschriftLogik";
 import Fuhrpark from "./Fuhrpark";
 import Abwesenheiten from "./Abwesenheiten";
 // Export-Bibliotheken (jsPDF, ExcelJS) sind vergleichsweise groß - werden per
@@ -621,6 +622,7 @@ function gesamt(t) {
 // Touren-Tabellen als auch für den Status-Text selbst verwendet.
 function statusColors(status) {
   if (status === "Reklamiert") return { bg: "#FF9966", text: "#7A2E00" };
+  if (status === "Teilabgerechnet") return { bg: "#B3D9FF", text: "#0B3D6B" };
   if (status === "Abgerechnet") return { bg: "#99FF99", text: "#1B5E20" };
   return { bg: "#FFFF99", text: "#6B5900" };
 }
@@ -630,6 +632,7 @@ function statusColors(status) {
 function GutschriftStatusBadge({ status }) {
   const map = {
     abgerechnet: { label: "Abgerechnet", bg: "#99FF99", text: "#1B5E20", icon: CheckCircle2 },
+    teilabgerechnet: { label: "Teilabgerechnet", bg: "#B3D9FF", text: "#0B3D6B", icon: CheckCircle2 },
     differenz: { label: "Differenz", bg: "#FF9966", text: "#7A2E00", icon: AlertTriangle },
     mehrdeutig: { label: "Mehrdeutig", bg: "#FDF1DD", text: "#8A5A10", icon: HelpCircle },
     nicht_gefunden: { label: "Nicht gefunden", bg: "#E1E6EC", text: "#64707C", icon: HelpCircle },
@@ -691,8 +694,17 @@ export default function TourenApp() {
   // Dialog "Touren manuell zuweisen": { quelle: "preview"|"review", index
   // (Vorschau) bzw. id (Prüfliste), position, vorbelegt, belegtIds }.
   const [gsZuweisen, setGsZuweisen] = useState(null);
+  // Gutschrift-Historie (tour_gutschriften) der gerade bearbeiteten Tour.
+  const [editGsHistory, setEditGsHistory] = useState(null);
   const [editId, setEditId] = useState(null);
   const [editForm, setEditForm] = useState(null);
+  useEffect(() => {
+    setEditGsHistory(null);
+    if (!editId) return;
+    let aktiv = true;
+    db.fetchTourGutschriften(editId).then((d) => { if (aktiv) setEditGsHistory(d); }).catch(() => {});
+    return () => { aktiv = false; };
+  }, [editId]);
   // Gesetzt, wenn das Bearbeiten-Fenster über die Gutschriften-Prüfliste
   // geöffnet wurde (id der Prüflisten-Zeile) - beim Speichern wird diese
   // Zeile dann automatisch als erledigt markiert, siehe saveEdit().
@@ -1480,7 +1492,7 @@ export default function TourenApp() {
       setTours(freshTours);
       setGsResult({
         anzahl: gsPreview.positionen.length,
-        abgerechnet: gsPreview.positionen.filter((p) => p.status === "abgerechnet").length,
+        abgerechnet: gsPreview.positionen.filter((p) => p.status === "abgerechnet" || p.status === "teilabgerechnet").length,
         differenz: gsPreview.positionen.filter((p) => p.status === "differenz").length,
         mehrdeutig: gsPreview.positionen.filter((p) => p.status === "mehrdeutig").length,
         nichtGefunden: gsPreview.positionen.filter((p) => p.status === "nicht_gefunden").length,
@@ -1530,7 +1542,7 @@ export default function TourenApp() {
   function vorbelegungFuer(orderNr, betrag) {
     const kandidaten = tours.filter((t) => t.auftragsNr === orderNr && t.status !== "Abgerechnet");
     if (kandidaten.length === 0) return [];
-    const sum = Math.round(kandidaten.reduce((s, t) => s + gesamt(t), 0) * 100) / 100;
+    const sum = Math.round(kandidaten.reduce((s, t) => s + offenBetrag(t), 0) * 100) / 100;
     return Math.abs(sum - (Number(betrag) || 0)) <= 0.01 ? kandidaten.map((t) => t.id) : [];
   }
 
@@ -1556,19 +1568,19 @@ export default function TourenApp() {
     });
   }
 
-  async function confirmZuweisen(tourIds) {
+  async function confirmZuweisen({ tourIds, zuordnung, teil, betragTour, offen }) {
     const z = gsZuweisen;
     if (!z) return;
     if (z.quelle === "preview") {
-      const gew = tours.filter((t) => tourIds.includes(t.id));
-      const betragTour = Math.round(gew.reduce((s, t) => s + gesamt(t), 0) * 100) / 100;
       setGsPreview((prev) => {
         if (!prev) return prev;
         const positionen = prev.positionen.map((p, i) => (i !== z.index ? p : {
           ...p,
-          status: "abgerechnet",
+          status: teil ? "teilabgerechnet" : "abgerechnet",
           manuell: true,
           tourIds,
+          zuordnung,
+          offen,
           tourId: tourIds.length === 1 ? tourIds[0] : null,
           betragTour,
           differenz: Math.round(((Number(p.betrag) || 0) - betragTour) * 100) / 100,
@@ -1577,7 +1589,7 @@ export default function TourenApp() {
         return { ...prev, positionen };
       });
     } else {
-      const { touren, review } = await db.zuweisenGutschriftPosition(z.id, tourIds);
+      const { touren, review } = await db.zuweisenGutschriftPosition(z.id, zuordnung);
       setTours(touren);
       setGsReview(review);
     }
@@ -1589,7 +1601,8 @@ export default function TourenApp() {
   async function undoZuweisenPreview(index) {
     const p = gsPreview?.positionen[index];
     if (!p) return;
-    const { manuell, tourIds, ...rest } = p;
+    // eslint-disable-next-line no-unused-vars
+    const { manuell, tourIds, zuordnung, offen, ...rest } = p;
     try {
       const [neu] = await db.matchGutschriftPositionen([rest]);
       setGsPreview((prev) => (prev ? { ...prev, positionen: prev.positionen.map((q, i) => (i === index ? neu : q)) } : prev));
@@ -1752,7 +1765,7 @@ export default function TourenApp() {
   // Suche -> Bearbeiten), fällt die Tour automatisch aus dieser Liste heraus.
   const reklamationTours = useMemo(() => {
     return tours
-      .filter((t) => t.status === "Offen" || t.status === "Reklamiert")
+      .filter((t) => t.status === "Offen" || t.status === "Reklamiert" || t.status === "Teilabgerechnet")
       .slice()
       .sort((a, b) => (a.datum || "").localeCompare(b.datum || ""));
   }, [tours]);
@@ -1761,9 +1774,10 @@ export default function TourenApp() {
   const reklamationStats = useMemo(() => {
     const build = (status) => {
       const matches = tours.filter((t) => t.status === status);
-      return { anzahl: matches.length, summe: matches.reduce((s, t) => s + gesamt(t), 0) };
+      // Teilabgerechnet: nur der noch offene Betrag zählt.
+      return { anzahl: matches.length, summe: matches.reduce((s, t) => s + offenBetrag(t), 0) };
     };
-    return { offen: build("Offen"), reklamiert: build("Reklamiert") };
+    return { offen: build("Offen"), reklamiert: build("Reklamiert"), teil: build("Teilabgerechnet") };
   }, [tours]);
 
   // Touren-Tab: Liste inkl. Monatsfilter, neueste zuerst.
@@ -2056,7 +2070,12 @@ export default function TourenApp() {
       const m = dashTours.filter((t) => t.status === status);
       return { anzahl: m.length, summe: m.reduce((s, t) => s + gesamt(t), 0) };
     };
-    return { offen: build("Offen"), reklamiert: build("Reklamiert"), abgerechnet: build("Abgerechnet") };
+    const teil = dashTours.filter((t) => t.status === "Teilabgerechnet");
+    return {
+      offen: build("Offen"), reklamiert: build("Reklamiert"), abgerechnet: build("Abgerechnet"),
+      // Teilabgerechnet: Summe = noch offener Rest
+      teil: { anzahl: teil.length, summe: teil.reduce((s, t) => s + offenBetrag(t), 0) },
+    };
   }, [dashTours]);
 
   // Beschriftung der KM-Spalte im LKW-Ranking, passend zur gröbsten aktuell
@@ -2616,10 +2635,11 @@ export default function TourenApp() {
               <div style={{ background: MARINE, color: AMBER, fontSize: 11, fontWeight: 600, padding: "8px 14px" }}>
                 TOURENSTATUS
               </div>
-              <div className="dash-status-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)" }}>
+              <div className="dash-status-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)" }}>
                 {[
                   { label: "Offen", stat: dashStatusStats.offen, bg: "#FFFF99", text: "#6B5900" },
                   { label: "Reklamiert", stat: dashStatusStats.reklamiert, bg: "#FF9966", text: "#7A2E00" },
+                  { label: "Teilabgerechnet (offen)", stat: dashStatusStats.teil, bg: "#B3D9FF", text: "#0B3D6B" },
                   { label: "Abgerechnet", stat: dashStatusStats.abgerechnet, bg: "#99FF99", text: "#1B5E20" },
                 ].map((s) => (
                   <div key={s.label}>
@@ -2779,6 +2799,7 @@ export default function TourenApp() {
                     <option value="ALLE">Alle</option>
                     <option value="Offen">Offen</option>
                     <option value="Reklamiert">Reklamiert</option>
+                    <option value="Teilabgerechnet">Teilabgerechnet</option>
                     <option value="Abgerechnet">Abgerechnet</option>
                   </select>
                 </div>
@@ -2845,6 +2866,9 @@ export default function TourenApp() {
                               {t.gutschriftNr}
                             </span>
                           ) : "–"}
+                          {t.status === "Teilabgerechnet" && (
+                            <div style={{ fontSize: 10.5, color: "#0B3D6B" }}>offen {euro(offenBetrag(t))}</div>
+                          )}
                         </td>
                         <td>
                           <button className="ghost" onClick={() => openEdit(t)} style={{ padding: "4px 8px" }}>
@@ -2865,14 +2889,15 @@ export default function TourenApp() {
           <div>
             <PageHeading icon={AlertTriangle} title="Reklamationen" />
             <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginBottom: 14 }}>
-              Offene und reklamierte Touren, sortiert nach Datum. Sobald eine Tour auf "Abgerechnet" gesetzt wird
-              (über Suche → Bearbeiten), verschwindet sie automatisch aus dieser Liste.
+              Offene, reklamierte und teilabgerechnete Touren, sortiert nach Datum. Bei teilabgerechneten Touren zählt nur der
+              noch offene Betrag. Sobald eine Tour auf "Abgerechnet" gesetzt wird, verschwindet sie automatisch aus dieser Liste.
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14, marginBottom: 20 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 20 }}>
               {[
                 { label: "Offen", stat: reklamationStats.offen },
                 { label: "Reklamiert", stat: reklamationStats.reklamiert },
+                { label: "Teilabgerechnet (offener Rest)", stat: reklamationStats.teil },
               ].map((k) => (
                 <div key={k.label} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
                   <div style={{ background: MARINE, color: AMBER, fontSize: 11, fontWeight: 600, padding: "8px 14px" }}>
@@ -2919,11 +2944,21 @@ export default function TourenApp() {
                         {COSTFIELDS.map((k) => (
                           <td key={k} className="mono" style={{ textAlign: "right" }}>{euro(t[k])}</td>
                         ))}
-                        <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>{euro(gesamt(t))}</td>
+                        <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>
+                          {t.status === "Teilabgerechnet" ? (
+                            <>
+                              {euro(offenBetrag(t))}
+                              <div style={{ fontSize: 10.5, fontWeight: 400 }}>offen von {euro(gesamt(t))}</div>
+                            </>
+                          ) : euro(gesamt(t))}
+                        </td>
                         <td>
                           <span style={{ color: sc.text, fontSize: 12, fontWeight: 700 }}>
                             {t.status}
                           </span>
+                          {t.status === "Teilabgerechnet" && formatFelder(t.offenFelder) && (
+                            <div style={{ fontSize: 11, color: sc.text }}>fehlt: {formatFelder(t.offenFelder)}</div>
+                          )}
                         </td>
                         <td>
                           <button className="ghost" onClick={() => openEdit(t)} style={{ padding: "4px 8px" }}>
@@ -2964,7 +2999,7 @@ export default function TourenApp() {
               )}
               {gsResult && (
                 <div style={{ marginTop: 14, fontSize: 12.5, color: SUCCESS, background: "#E7F6EF", borderRadius: 8, padding: "10px 14px" }}>
-                  Übernommen: {gsResult.abgerechnet} von {gsResult.anzahl} Positionen automatisch auf "Abgerechnet" gesetzt.
+                  Übernommen: {gsResult.abgerechnet} von {gsResult.anzahl} Positionen abgerechnet bzw. teilabgerechnet.
                   {(gsResult.differenz + gsResult.mehrdeutig + gsResult.nichtGefunden) > 0 && (
                     <> {gsResult.differenz + gsResult.mehrdeutig + gsResult.nichtGefunden} weitere stehen jetzt in der Prüfliste unten.</>
                   )}
@@ -2975,7 +3010,7 @@ export default function TourenApp() {
             {gsPreview && (() => {
               const pos = gsPreview.positionen;
               const counts = {
-                abgerechnet: pos.filter((p) => p.status === "abgerechnet"),
+                abgerechnet: pos.filter((p) => p.status === "abgerechnet" || p.status === "teilabgerechnet"),
                 differenz: pos.filter((p) => p.status === "differenz"),
                 mehrdeutig: pos.filter((p) => p.status === "mehrdeutig"),
                 nicht_gefunden: pos.filter((p) => p.status === "nicht_gefunden"),
@@ -3008,7 +3043,7 @@ export default function TourenApp() {
 
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 16 }}>
                     {[
-                      { key: "abgerechnet", label: "Wird abgerechnet", color: SUCCESS },
+                      { key: "abgerechnet", label: "Wird (teil-)abgerechnet", color: SUCCESS },
                       { key: "differenz", label: "Differenz", color: DANGER },
                       { key: "mehrdeutig", label: "Mehrdeutig", color: AMBER_DARK },
                       { key: "nicht_gefunden", label: "Nicht gefunden", color: TEXT_MUTED },
@@ -3047,11 +3082,21 @@ export default function TourenApp() {
                                 {p.differenz === null ? "–" : euro(p.differenz)}
                               </td>
                               <td style={{ fontSize: 11.5, color: TEXT_MUTED }}>
-                                {p.manuell && (
+                                {p.manuell && p.status === "teilabgerechnet" && (
+                                  <span style={{ color: "#0B3D6B", fontWeight: 600 }}>
+                                    Teilgutschrift - offen bleibt {euro(p.offen?.betrag)}{formatFelder(p.offen?.felder) ? ` (${formatFelder(p.offen.felder)})` : ""}
+                                  </span>
+                                )}
+                                {p.manuell && p.status !== "teilabgerechnet" && (
                                   <span style={{ color: MARINE, fontWeight: 600 }}>
                                     Manuell zugewiesen: {p.tourIds.length} Tour{p.tourIds.length > 1 ? "en" : ""}
-                                    {p.differenz && Math.abs(p.differenz) > 0.01 ? " (mit Differenz)" : ""}
+                                    {p.differenz && Math.abs(p.differenz) > 0.01 ? " (Differenz ausgebucht)" : ""}
                                   </span>
+                                )}
+                                {!p.manuell && p.status === "differenz" && (
+                                  p.fehlend && formatFelder(p.fehlend)
+                                    ? <>Fehlt laut Gutschrift: <b style={{ color: DANGER }}>{formatFelder(p.fehlend)}</b> - über "Zuweisen" als Teilgutschrift übernehmen</>
+                                    : <>Betrag weicht ab - über "Zuweisen" prüfen</>
                                 )}
                                 {!p.manuell && p.status === "mehrdeutig" && `${p.kandidatenAnzahl} offene Touren mit dieser Nr. - über "Zuweisen" auswählen`}
                                 {!p.manuell && p.status === "nicht_gefunden" && "Keine offene Tour mit dieser Auftragsnummer - über \"Zuweisen\" manuell suchen"}
@@ -3081,7 +3126,7 @@ export default function TourenApp() {
                   </div>
 
                   <button className="primary" disabled={blockiert || gsApplying} onClick={handleGutschriftApply} style={(blockiert || gsApplying) ? { opacity: 0.6, cursor: "default" } : undefined}>
-                    <CheckCircle2 size={15} /> {gsApplying ? "Übernehme …" : `Übernehmen (${counts.abgerechnet.reduce((n, p) => n + (p.tourIds && p.tourIds.length ? p.tourIds.length : p.tourId ? 1 : 0), 0)} Touren werden auf "Abgerechnet" gesetzt)`}
+                    <CheckCircle2 size={15} /> {gsApplying ? "Übernehme …" : `Übernehmen (${counts.abgerechnet.reduce((n, p) => n + (p.tourIds && p.tourIds.length ? p.tourIds.length : p.tourId ? 1 : 0), 0)} Touren werden (teil-)abgerechnet)`}
                   </button>
                 </div>
               );
@@ -3130,7 +3175,7 @@ export default function TourenApp() {
                             {r.gutschrift_imports?.beleg_nr || "–"}{r.gutschrift_imports?.rg_datum ? ` · ${formatDateDMY(r.gutschrift_imports.rg_datum)}` : ""}
                           </td>
                           <td style={{ display: "flex", gap: 4, whiteSpace: "nowrap" }}>
-                            <button className="ghost" style={{ padding: "4px 8px" }} onClick={() => openZuweisenReview(r)} title="Tour(en) manuell zuweisen - Touren werden auf Abgerechnet gesetzt und bekommen die Gutschrift-Nr.">
+                            <button className="ghost" style={{ padding: "4px 8px" }} onClick={() => openZuweisenReview(r)} title="Tour(en) manuell zuweisen oder als Teilgutschrift übernehmen - Touren bekommen die Gutschrift-Nr.">
                               <Link2 size={13} /> Zuweisen
                             </button>
                             {r.tour_id && (
@@ -3294,7 +3339,7 @@ export default function TourenApp() {
                   <label>Status</label>
                   <select value={search.status} onChange={(e) => setSearch({ ...search, status: e.target.value })}>
                     <option value="">Alle</option>
-                    <option>Offen</option><option>Reklamiert</option><option>Abgerechnet</option>
+                    <option>Offen</option><option>Reklamiert</option><option>Teilabgerechnet</option><option>Abgerechnet</option>
                   </select>
                 </div>
               </div>
@@ -3345,6 +3390,9 @@ export default function TourenApp() {
                               {t.gutschriftNr}
                             </span>
                           ) : "–"}
+                          {t.status === "Teilabgerechnet" && (
+                            <div style={{ fontSize: 10.5, color: "#0B3D6B" }}>offen {euro(offenBetrag(t))}</div>
+                          )}
                         </td>
                         <td>
                           <div style={{ display: "flex", gap: 4 }}>
@@ -3355,7 +3403,7 @@ export default function TourenApp() {
                               <select autoFocus value={t.status} style={{ width: 130 }}
                                 onChange={(e) => quickChangeStatus(t.id, e.target.value)}
                                 onBlur={() => setQuickStatusId(null)}>
-                                <option>Offen</option><option>Reklamiert</option><option>Abgerechnet</option>
+                                <option>Offen</option><option>Reklamiert</option><option>Teilabgerechnet</option><option>Abgerechnet</option>
                               </select>
                             ) : (
                               <button className="ghost" onClick={() => setQuickStatusId(t.id)} style={{ padding: "4px 8px" }} title="Status ändern">
@@ -4088,13 +4136,39 @@ export default function TourenApp() {
               <div style={{ fontSize: 15, fontWeight: 600 }}>Tour bearbeiten</div>
               <button className="ghost" style={{ padding: 6 }} onClick={() => { setEditId(null); setEditForm(null); setEditFromGutschriftId(null); setConfirmDelete(false); setEditErrors([]); setEditSaveNote(""); }}><X size={15} /></button>
             </div>
-            {editForm.gutschriftNr && (
-              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#1B5E20", background: "#E7F6EF", borderRadius: 8, padding: "8px 12px", marginBottom: 14 }}>
-                <Receipt size={14} />
-                Automatisch abgerechnet über Gutschrift-Nr. <span className="mono" style={{ fontWeight: 700 }}>{editForm.gutschriftNr}</span>
-                {editForm.gutschriftDatum ? ` vom ${formatDateDMY(editForm.gutschriftDatum)}` : ""}
-              </div>
-            )}
+            {editForm.gutschriftNr && (() => {
+              const teil = editForm.status === "Teilabgerechnet";
+              const liste = editGsHistory && editGsHistory.length > 0 ? editGsHistory : null;
+              return (
+                <div style={{ fontSize: 12.5, color: teil ? "#0B3D6B" : "#1B5E20", background: teil ? "#E7F1FB" : "#E7F6EF", borderRadius: 8, padding: "8px 12px", marginBottom: 14 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Receipt size={14} />
+                    {liste ? (
+                      <span>
+                        Gutschrift{liste.length > 1 ? "en" : ""}:{" "}
+                        {liste.map((g, i) => (
+                          <span key={g.id}>
+                            {i > 0 ? " · " : ""}
+                            <span className="mono" style={{ fontWeight: 700 }}>{g.gutschrift_nr}</span>
+                            {g.gutschrift_datum ? ` vom ${formatDateDMY(g.gutschrift_datum)}` : ""} ({euro(g.betrag)}{g.teil ? ", Teil" : ""})
+                          </span>
+                        ))}
+                      </span>
+                    ) : (
+                      <span>
+                        Abgerechnet über Gutschrift-Nr. <span className="mono" style={{ fontWeight: 700 }}>{editForm.gutschriftNr}</span>
+                        {editForm.gutschriftDatum ? ` vom ${formatDateDMY(editForm.gutschriftDatum)}` : ""}
+                      </span>
+                    )}
+                  </div>
+                  {teil && (
+                    <div style={{ marginTop: 4, fontWeight: 600 }}>
+                      Noch offen: {euro(offenBetrag(editForm))}{formatFelder(editForm.offenFelder) ? ` (${formatFelder(editForm.offenFelder)})` : ""}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, fontSize: 13, color: TEXT, cursor: "pointer" }}>
               <input type="checkbox" style={{ width: "auto", margin: 0 }} checked={!!editForm.andererAuftraggeber}
                 onChange={(e) => {
@@ -4197,7 +4271,7 @@ export default function TourenApp() {
                 <select value={editForm.status} style={statusFieldStyle(editForm.status, editErrors)}
                   onChange={(e) => { setEditForm({ ...editForm, status: e.target.value }); setEditErrors(editErrors.filter((k) => k !== "status")); }}>
                   <option value="">Bitte wählen …</option>
-                  <option>Offen</option><option>Reklamiert</option><option>Abgerechnet</option>
+                  <option>Offen</option><option>Reklamiert</option><option>Teilabgerechnet</option><option>Abgerechnet</option>
                 </select>
               </div>
             </div>

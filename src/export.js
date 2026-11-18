@@ -35,6 +35,7 @@ function gesamt(t) {
 // hier als reine Hex-Werte ohne "#" für ExcelJS-Zellfüllungen.
 function statusColorsHex(status) {
   if (status === "Reklamiert") return { bg: "FF9966", text: "7A2E00" };
+  if (status === "Teilabgerechnet") return { bg: "B3D9FF", text: "0B3D6B" };
   if (status === "Abgerechnet") return { bg: "99FF99", text: "1B5E20" };
   return { bg: "FFFF99", text: "6B5900" };
 }

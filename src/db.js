@@ -1,3 +1,4 @@
+import { offenBetrag, offenFelder, felderAusZeilen, feldVergleich, fehlendeFelder } from "./gutschriftLogik";
 import { supabase } from "./supabaseClient";
 
 // ============================================================================
@@ -89,6 +90,10 @@ const tourFromDb = (r) => ({
   // unangetastet (Supabase upsert() ändert nur mitgeschickte Spalten).
   gutschriftNr: nullToEmpty(r.gutschrift_nr),
   gutschriftDatum: nullToEmpty(r.gutschrift_datum),
+  // Teilgutschriften: bereits gutgeschriebener Betrag + offene Kostenarten
+  // (nur bei Status "Teilabgerechnet" relevant, ebenfalls nur lesend).
+  betragGutgeschrieben: r.betrag_gutgeschrieben === null || r.betrag_gutgeschrieben === undefined ? null : Number(r.betrag_gutgeschrieben),
+  offenFelder: r.offen_felder || null,
 });
 
 // Supabase/PostgREST liefert pro Anfrage standardmäßig maximal 1000 Zeilen
@@ -338,11 +343,9 @@ export async function extractFrachtbrief(fileBase64, mediaType, knownPlates) {
 //    ist und wie groß die Abweichung ist).
 //  - >1 Kandidaten -> "mehrdeutig" (keine automatische Entscheidung, da nicht
 //    zuverlässig unterscheidbar - siehe Nutzer-Rückmeldung dazu).
-const GUTSCHRIFT_COSTFIELDS = ["fracht", "fd", "adr", "multistop", "wartezeit", "maut", "diesel"];
-
-function tourSumme(t) {
-  return Math.round(GUTSCHRIFT_COSTFIELDS.reduce((s, k) => s + (Number(t[k]) || 0), 0) * 100) / 100;
-}
+//  - Bei Touren mit Status "Teilabgerechnet" zählt nur der noch offene Betrag
+//    (z. B. die fehlende FD aus einer früheren Teilgutschrift).
+const tourSumme = (t) => offenBetrag(t);
 
 export async function matchGutschriftPositionen(positionen) {
   const orderNrs = [...new Set(positionen.map((p) => p.orderNr).filter(Boolean))];
@@ -350,7 +353,7 @@ export async function matchGutschriftPositionen(positionen) {
 
   const { data, error } = await supabase
     .from("tours")
-    .select("id, datum, lkw, kunde, auftrags_nr, status, fracht, fd, adr, multistop, wartezeit, maut, diesel")
+    .select("id, datum, lkw, kunde, auftrags_nr, status, fracht, fd, adr, multistop, wartezeit, maut, diesel, betrag_gutgeschrieben, offen_felder")
     .in("auftrags_nr", orderNrs)
     .neq("status", "Abgerechnet");
   if (error) throw error;
@@ -378,8 +381,12 @@ export async function matchGutschriftPositionen(positionen) {
     const betragTour = tourSumme(tour);
     const differenz = Math.round((p.betrag - betragTour) * 100) / 100;
     const status = Math.abs(differenz) <= 0.01 ? "abgerechnet" : "differenz";
+    // Welche Kostenarten fehlen laut Gutschrift? (Hinweis in der Vorschau)
+    const fehlend = status === "differenz" && differenz < 0
+      ? fehlendeFelder(feldVergleich(offenFelder(tour), felderAusZeilen(p.zeilen)), -differenz)
+      : null;
     return {
-      ...p, status, tourId: tour.id, betragTour, differenz, kandidatenAnzahl: 1,
+      ...p, status, tourId: tour.id, betragTour, differenz, kandidatenAnzahl: 1, fehlend,
       kandidaten: [{ id: tour.id, datum: tour.datum, lkw: tour.lkw, kunde: tour.kunde, betrag: betragTour }],
     };
   });
@@ -407,6 +414,13 @@ export async function applyGutschriftImport(meta, positionen) {
       // als eine Position abgerechnet) - siehe Zuweisungs-Dialog.
       tourIds: p.tourIds && p.tourIds.length ? p.tourIds : (p.tourId ? [p.tourId] : []),
       manuell: !!p.manuell,
+      // Buchung je Tour: [{ tourId, betrag (gutgeschrieben), betragTour,
+      // teil, offenFelder }]. Automatisch exakt abgeglichene Positionen
+      // bekommen hier die Standard-Zuordnung (ganze Position auf die Tour).
+      zuordnung: p.zuordnung && p.zuordnung.length ? p.zuordnung
+        : (p.status === "abgerechnet" && p.tourId
+          ? [{ tourId: p.tourId, betrag: p.betrag, betragTour: p.betragTour, teil: false }]
+          : []),
       betragTour: p.betragTour === null || p.betragTour === undefined ? "" : p.betragTour,
       differenz: p.differenz === null || p.differenz === undefined ? "" : p.differenz,
       kandidatenAnzahl: p.kandidatenAnzahl || 0,
@@ -443,14 +457,25 @@ export async function fetchGutschriftImports() {
 // Weist eine Prüflisten-Position nachträglich einer oder mehreren Touren zu:
 // Touren -> "Abgerechnet" + Gutschrift-Nr./-Datum des Imports, Position ->
 // abgerechnet + erledigt (atomar über RPC gutschrift_position_zuweisen).
-export async function zuweisenGutschriftPosition(positionId, tourIds) {
+export async function zuweisenGutschriftPosition(positionId, zuordnung) {
   const { error } = await supabase.rpc("gutschrift_position_zuweisen", {
     p_position_id: positionId,
-    p_tour_ids: tourIds,
+    p_zuordnung: zuordnung,
   });
   if (error) throw error;
   const [touren, review] = await Promise.all([fetchTours(), fetchOffeneGutschriftPositionen()]);
   return { touren, review };
+}
+
+// Alle Gutschriften (auch Teilgutschriften) einer Tour, älteste zuerst.
+export async function fetchTourGutschriften(tourId) {
+  const { data, error } = await supabase
+    .from("tour_gutschriften")
+    .select("*")
+    .eq("tour_id", tourId)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return data;
 }
 
 export async function markGutschriftPositionErledigt(id, notiz) {
