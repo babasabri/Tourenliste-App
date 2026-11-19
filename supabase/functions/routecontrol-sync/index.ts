@@ -119,16 +119,31 @@ async function rcMaxKm(token: string, vehicleId: number, from: Date, to: Date) {
   let page = 1, max: number | null = null, lastEnd: string | null = null, fahrten = 0;
   const limit = 200;
   while (page < 50) {
-    const r = await fetch(`${API}/reports/route-report`, {
-      method: "POST", headers: rcHeaders(token),
-      body: JSON.stringify({
-        vehicle_ids: [vehicleId], from_date: from.toISOString(), to_date: to.toISOString(),
-        response_type: "json", language: "de", response_type_format: "base64",
-        utc_timezone_offset: -off, is_dst_active: off === 120,
-        page, limit, sort_by: "", direction: "asc",
-      }),
+    const reqBody = JSON.stringify({
+      vehicle_ids: [vehicleId], from_date: from.toISOString(), to_date: to.toISOString(),
+      response_type: "json", language: "de", response_type_format: "base64",
+      utc_timezone_offset: -off, is_dst_active: off === 120,
+      page, limit, sort_by: "", direction: "asc",
     });
-    if (!r.ok) throw new Error(`Routenbericht Fahrzeug ${vehicleId}: HTTP ${r.status}`);
+    // Kurzzeitige Störungen bei routecontrol (502/503/504, 429, Netzwerkfehler)
+    // abfangen: bis zu 3 Versuche mit wachsender Wartezeit (2 s, 4 s).
+    let r: Response | null = null;
+    let letzterFehler = "";
+    for (let versuch = 1; versuch <= 3; versuch++) {
+      try {
+        r = await fetch(`${API}/reports/route-report`, { method: "POST", headers: rcHeaders(token), body: reqBody });
+        if (r.ok || ![429, 500, 502, 503, 504].includes(r.status)) break;
+        letzterFehler = `HTTP ${r.status}`;
+      } catch (e) {
+        r = null;
+        letzterFehler = (e as Error).message;
+      }
+      if (versuch < 3) await new Promise((res) => setTimeout(res, versuch * 2000));
+    }
+    // routecontrol antwortet mit 404, wenn es im Zeitraum keine Fahrten gibt
+    // (z. B. LKW steht / ist inaktiv) - das ist kein Fehler, sondern "keine Fahrten".
+    if (r && r.status === 404) break;
+    if (!r || !r.ok) throw new Error(`Routenbericht Fahrzeug ${vehicleId}: ${r ? `HTTP ${r.status}` : letzterFehler}`);
     const j = await r.json();
     const rows: any[] = Array.isArray(j?.report) ? j.report : Array.isArray(j?.data) ? j.data : [];
     for (const row of rows) {
@@ -193,7 +208,14 @@ Deno.serve(async (req) => {
       if (from > now) continue; // Woche liegt in der Zukunft
       const bis = to > now ? now : to;
       for (const v of fahrzeuge) {
-        const r = await rcMaxKm(token, v.id, from, bis);
+        let r;
+        try {
+          r = await rcMaxKm(token, v.id, from, bis);
+        } catch (e) {
+          // Ein einzelner LKW mit Fehler blockiert die anderen nicht mehr.
+          ergebnis.push({ jahr: w.jahr, kw: w.kw, lkw: v.lkw, aktion: "Fehler: " + (e as Error).message });
+          continue;
+        }
         const eintrag: any = { jahr: w.jahr, kw: w.kw, lkw: v.lkw, fahrten: r.fahrten, km_stand: r.max, stand_vom: r.lastEnd };
         if (r.max == null) { eintrag.aktion = "keine Fahrten – unverändert"; ergebnis.push(eintrag); continue; }
         const km = Math.floor(r.max); // wie Tachoanzeige: Nachkommastellen abschneiden
@@ -225,6 +247,14 @@ Deno.serve(async (req) => {
     }
   } catch (e) {
     fehler = (e as Error).message;
+  }
+  // Einzelne LKW-Fehler zusammenfassen (die übrigen LKW wurden trotzdem übernommen).
+  if (!fehler) {
+    const lkwFehler = ergebnis.filter((e) => String(e.aktion || "").startsWith("Fehler"));
+    if (lkwFehler.length) {
+      fehler = `${lkwFehler.length} LKW nicht abrufbar (${lkwFehler.map((e) => e.lkw).join(", ")}): `
+        + String(lkwFehler[0].aktion).replace(/^Fehler: /, "");
+    }
   }
 
   if (!dryRun) {
