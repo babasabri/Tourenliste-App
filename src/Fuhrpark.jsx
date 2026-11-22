@@ -5,14 +5,14 @@
 // im Reiter Tankvorgänge den OF RY 500 im August ansieht und auf Maut wechselt,
 // sieht dort ebenfalls OF RY 500 im August.
 //
-// Die Übersicht stellt je LKW alle Fahrzeugkosten (Diesel/AdBlue, Tank-
-// Nebenkosten, Maut, Ersatzteile) neben km und Umsatz und rechnet Kosten pro
-// km. Weil die Quellen unterschiedlich aktuell sind (Maut kommt z. B. nur
+// Die Übersicht stellt je LKW alle Kosten (in vier Gruppen: Fahren, Fahrzeug,
+// Fahrer, Gemeinkosten) neben km und Umsatz: Kennzahlen, LKW-Vergleich je km
+// als Balken und eine kompakte Tabelle mit aufklappbaren Kostenarten. Weil die Quellen unterschiedlich aktuell sind (Maut kommt z. B. nur
 // monatlich), wertet die Übersicht nur bis zu dem Tag aus, bis zu dem Tank-
 // UND Mautdaten vorliegen - sonst zählten km ohne die zugehörigen Kosten.
 
 import { useEffect, useMemo, useState } from "react";
-import { LayoutGrid, Fuel, Coins, Wrench, KeyRound, ShieldCheck, Users, Building2, Landmark, Loader2, RefreshCw, Info } from "lucide-react";
+import { LayoutGrid, Fuel, Coins, Wrench, KeyRound, ShieldCheck, Users, Building2, Landmark, Loader2, RefreshCw, Info, ChevronRight, ChevronDown, CheckCircle2, AlertTriangle } from "lucide-react";
 import Tankvorgaenge from "./Tankvorgaenge";
 import Maut from "./Maut";
 import Ersatzteile from "./Ersatzteile";
@@ -291,46 +291,149 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
   // Schlussraten (Einmalzahlung bei Übernahme ins Eigentum) - getrennt, nicht in Kosten/km
   const schlussraten = vertraege.filter((v) => v.schlussrateBetrag && v.schlussrateDatum && drin(v.schlussrateDatum) && (f.lkw === "ALLE" || v.kennzeichen === f.lkw));
   const proKm = (e, k) => (k > 0 ? e / k : null);
-  const maxKostenKm = Math.max(0, ...rows.map((r) => proKm(r.kosten, r.km) || 0));
+
+  // ---- Zeitraum-Schnellwahl (bildet auf jahr/monat/von/bis ab, damit der
+  // gemeinsame Filter der anderen Reiter unverändert funktioniert)
+  const J = f.jahr === "ALLE" ? null : Number(f.jahr);
+  const quartal = (j, q) => ({ von: `${j}-${pad2(q * 3 - 2)}-01`, bis: isoOf(new Date(j, q * 3, 0)) });
+  const zrWahl = (() => {
+    if (f.von || f.bis) {
+      for (let q = 1; q <= 4; q++) if (J && f.monat === "ALLE" && f.von === quartal(J, q).von && f.bis === quartal(J, q).bis) return `q${q}`;
+      return "eigen";
+    }
+    if (f.monat !== "ALLE") return `m${f.monat}`;
+    return "jahr";
+  })();
+  function setZr(v, jahr = f.jahr) {
+    const j = jahr === "ALLE" ? null : Number(jahr);
+    if (v === "jahr") return setF({ ...f, jahr, monat: "ALLE", von: "", bis: "" });
+    if (v === "eigen") return setF({ ...f, jahr, monat: "ALLE", von: f.von || start || (j ? `${j}-01-01` : ""), bis: f.bis || zr.ende || (j ? `${j}-12-31` : "") });
+    if (!j) return;
+    if (v.startsWith("q")) return setF({ ...f, jahr, monat: "ALLE", ...quartal(j, Number(v.slice(1))) });
+    if (v.startsWith("m")) return setF({ ...f, jahr, monat: v.slice(1), von: "", bis: "" });
+  }
+  function letzterMonat() {
+    const d = new Date(heute.getFullYear(), heute.getMonth() - 1, 1);
+    setF({ ...f, jahr: String(d.getFullYear()), monat: String(d.getMonth() + 1), von: "", bis: "" });
+  }
+
+  // ---- Datenstand je Quelle
+  const faBis = faAbr.reduce((m, a) => (a.datum > m ? a.datum : m), "");
+  const zielEnde = zr.ende && zr.ende < isoOf(heute) ? zr.ende : isoOf(heute);
+  const quellen = [
+    { label: "Tankpool", bis: tankBis, kappt: true },
+    { label: "Maut", bis: mautBis, kappt: true },
+    { label: "Werkstatt", bis: teileBis },
+    { label: "Factoring", bis: faBis },
+  ];
+
+  // ---- Kostengruppen
+  const gruppen = (r) => [
+    { id: "fahren", label: "Fahren", farbe: AMBER, wert: r.diesel + r.neben + r.maut, teile: [["Diesel + AdBlue", r.diesel], ["Maut", r.maut], ["Tank-Nebenkosten", r.neben]] },
+    { id: "fahrzeug", label: "Fahrzeug", farbe: "#3D6B8C", wert: r.teile + r.leasing + r.versSteuer, teile: [["Werkstatt & Teile", r.teile], ["Leasing/Miete", r.leasing], ["Versicherung, Steuer, Telematik", r.versSteuer]] },
+    { id: "fahrer", label: "Fahrer", farbe: "#86AECB", wert: r.fahrer, teile: [["Fahrerkosten", r.fahrer]] },
+    { id: "gemein", label: "Gemeinkosten", farbe: "#C7D1DB", wert: r.gemein + r.factoring, teile: [["Gemeinkosten", r.gemein], ["Factoring", r.factoring]] },
+  ];
+  const GRUPPEN_LEGENDE = gruppen(sum);
+  const ergebnis = (r) => r.umsatz - r.kosten;
+  const marge = (r) => (r.umsatz ? (ergebnis(r) / r.umsatz) * 100 : null);
+  // Grafik: nur LKW mit km; sortiert nach Ergebnis
+  const mitKm = rows.filter((r) => r.km > 0).sort((a, b) => ergebnis(b) - ergebnis(a));
+  const skala = Math.max(0.01, ...mitKm.map((r) => Math.max(proKm(r.kosten, r.km) || 0, proKm(r.umsatz, r.km) || 0))) * 1.08;
+  const [offenZeile, setOffenZeile] = useState(null);
+  const tabRows = [...rows].sort((a, b) => {
+    // eigene Fahrzeuge zuerst (Fuhrpark-Reihenfolge), Auflieger zuletzt
+    const ia = a.lkw === AUFLIEGER ? 999 : fleetPlates.indexOf(a.lkw) === -1 ? 500 : fleetPlates.indexOf(a.lkw);
+    const ib = b.lkw === AUFLIEGER ? 999 : fleetPlates.indexOf(b.lkw) === -1 ? 500 : fleetPlates.indexOf(b.lkw);
+    return ia - ib;
+  });
+  const geldFarbe = (x) => (x >= 0 ? SUCCESS : DANGER);
+  const pkm = (x) => (Number.isFinite(x) ? `${dez(x, 2)} €` : "–");
+
+  function Aufschluesselung({ r }) {
+    return (
+      <div className="fp-detail" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, padding: "6px 4px 10px" }}>
+        {gruppen(r).map((g) => (
+          <div key={g.id}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, color: TEXT, marginBottom: 4 }}>
+              <span style={{ width: 10, height: 10, borderRadius: 2, background: g.farbe, display: "inline-block" }} /> {g.label}
+              <span className="mono" style={{ marginLeft: "auto" }}>{euro(g.wert)}</span>
+            </div>
+            {g.teile.map(([name, w]) => (
+              <div key={name} style={{ display: "flex", fontSize: 11.5, color: TEXT_MUTED, padding: "1px 0 1px 16px", gap: 8 }}>
+                <span style={{ flex: 1 }}>{name}</span>
+                <span className="mono">{w ? euro(w) : "–"}</span>
+                <span className="mono" style={{ width: 62, textAlign: "right" }}>{r.km > 0 && w ? `${dez(w / r.km, 3)}` : ""}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   return (
     <div>
+      {/* ------------------------------------------------ A: Zeitraum + Datenstand */}
       <div style={{ ...card, padding: "14px 18px" }}>
-        <div className="fp-filter-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
-          <div>
+        <div className="fp-filter-row" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div style={{ width: 110 }}>
             <label>Jahr</label>
-            <select value={f.jahr} onChange={(e) => setF({ ...f, jahr: e.target.value })}>
+            <select value={f.jahr} onChange={(e) => (zrWahl.startsWith("q") || zrWahl.startsWith("m") ? setZr(zrWahl, e.target.value) : setF({ ...f, jahr: e.target.value, von: "", bis: "", monat: "ALLE" }))}>
               <option value="ALLE">Alle</option>
               {jahre.map((j) => <option key={j} value={j}>{j}</option>)}
             </select>
           </div>
-          <div>
-            <label>Monat</label>
-            <select value={f.monat} onChange={(e) => setF({ ...f, monat: e.target.value })} disabled={f.jahr === "ALLE"}>
-              <option value="ALLE">Alle</option>
-              {MONATE.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+          <div style={{ width: 170 }}>
+            <label>Zeitraum</label>
+            <select value={zrWahl} onChange={(e) => setZr(e.target.value)}>
+              <option value="jahr">{J ? "Ganzes Jahr" : "Gesamter Zeitraum"}</option>
+              {J && <optgroup label="Quartal">{[1, 2, 3, 4].map((q) => <option key={q} value={`q${q}`}>{q}. Quartal</option>)}</optgroup>}
+              {J && <optgroup label="Monat">{MONATE.map((m, i) => <option key={m} value={`m${i + 1}`}>{m}</option>)}</optgroup>}
+              <option value="eigen">Eigener Zeitraum …</option>
             </select>
           </div>
-          <div>
+          {zrWahl === "eigen" && (
+            <>
+              <div style={{ width: 150 }}><label>von</label><input type="date" value={f.von} onChange={(e) => setF({ ...f, von: e.target.value })} /></div>
+              <div style={{ width: 150 }}><label>bis</label><input type="date" value={f.bis} onChange={(e) => setF({ ...f, bis: e.target.value })} /></div>
+            </>
+          )}
+          <div style={{ width: 150 }}>
             <label>LKW</label>
             <select value={f.lkw} onChange={(e) => setF({ ...f, lkw: e.target.value })}>
-              <option value="ALLE">Alle</option>
+              <option value="ALLE">Alle LKW</option>
               {lkwListe.map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
           </div>
-          <div>
-            <label>Datum von</label>
-            <input type="date" value={f.von} onChange={(e) => setF({ ...f, von: e.target.value })} />
-          </div>
-          <div>
-            <label>Datum bis</label>
-            <input type="date" value={f.bis} onChange={(e) => setF({ ...f, bis: e.target.value })} />
+          <div className="fp-filter-btns" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <button className="ghost" onClick={() => setF(leer)} title="Dieses Jahr, alle LKW">Dieses Jahr</button>
+            <button className="ghost" onClick={letzterMonat}>Letzter Monat</button>
+            <button className="ghost" onClick={neuLaden} disabled={laden} title="Daten neu laden"><RefreshCw size={14} /></button>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-          <button className="ghost" onClick={() => setF(leer)}>Filter zurücksetzen</button>
-          <button className="ghost" onClick={neuLaden} disabled={laden}><RefreshCw size={14} /> Neu laden</button>
-        </div>
+        {!laden && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 12, fontSize: 12 }}>
+            <span style={{ color: TEXT_MUTED, marginRight: 2 }}>Datenstand:</span>
+            {quellen.map((q) => {
+              const fehlt = !q.bis;
+              const alt = q.bis && q.bis < zielEnde;
+              const warn = q.kappt && (fehlt || alt);
+              return (
+                <span key={q.label} title={q.kappt ? "Begrenzt die Auswertung: ausgewertet wird nur bis zum frühesten dieser Stände" : "Letzter Beleg"}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 9px", borderRadius: 20, border: `1px solid ${warn ? "#F0D3A1" : BORDER}`, background: warn ? WARN_BG : "#F7F9FB", color: warn ? AMBER_DARK : TEXT }}>
+                  {warn ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} color={SUCCESS} />}
+                  {q.label} <b className="mono" style={{ fontWeight: 600 }}>{q.bis ? dmy(q.bis).slice(0, 6) : "–"}</b>
+                </span>
+              );
+            })}
+            {gekappt && (
+              <span style={{ marginLeft: 4, color: AMBER_DARK }}>
+                → ausgewertet bis <b>{dmy(datenBis)}</b> (danach fehlen noch Tank- oder Mautdaten)
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {fehler && <div style={{ fontSize: 12.5, color: DANGER, background: DANGER_BG, borderRadius: 8, padding: "10px 14px", marginBottom: 16 }}>{fehler}</div>}
@@ -339,117 +442,142 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
         <div style={{ padding: 30, color: TEXT_MUTED, display: "flex", gap: 8, alignItems: "center" }}><Loader2 size={16} /> Lade Fuhrparkdaten …</div>
       ) : (
         <>
-          {gekappt && (
-            <div style={{ fontSize: 12.5, color: AMBER_DARK, background: WARN_BG, borderRadius: 8, padding: "10px 14px", marginBottom: 16, display: "flex", gap: 8 }}>
-              <Info size={15} style={{ flexShrink: 0, marginTop: 1 }} />
-              <span>
-                Ausgewertet bis <b>{dmy(datenBis)}</b> – bis dahin liegen Tank- und Mautdaten vollständig vor
-                (Tankpool bis {dmy(tankBis) || "–"}, Maut bis {dmy(mautBis) || "–"}). Km, Umsatz und Kosten danach zählen erst mit,
-                wenn die nächsten Abrechnungen importiert sind. Letzter Ersatzteil-Beleg: {dmy(teileBis) || "–"}.
-              </span>
+          {/* ------------------------------------------------ B: Kennzahlen */}
+          <div className="fp-kpi-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 12 }}>
+            <Kpi label="Umsatz" value={euro(sum.umsatz)} sub={`${sum.touren.toLocaleString("de-DE")} Touren · ${kmTxt(sum.km)} km`} />
+            <Kpi label="Kosten" value={euro(sum.kosten)} sub={`davon Gemeinkosten + Factoring ${euro(sum.gemein + sum.factoring)}`} />
+            <Kpi label="Ergebnis" value={euro(ergebnis(sum))} accent={geldFarbe(ergebnis(sum))}
+              sub={marge(sum) !== null ? `${marge(sum) >= 0 ? "+" : ""}${Math.round(marge(sum))} % vom Umsatz` : null} />
+            <Kpi label="Je Kilometer" accent={geldFarbe(ergebnis(sum))}
+              value={sum.km > 0 ? `${ergebnis(sum) >= 0 ? "+" : ""}${dez(proKm(ergebnis(sum), sum.km), 2)} €` : "–"}
+              sub={sum.km > 0 ? `Umsatz ${dez(proKm(sum.umsatz, sum.km), 2)} € − Kosten ${dez(proKm(sum.kosten, sum.km), 2)} €` : "keine km im Zeitraum"} />
+          </div>
+          {sum.kosten > 0 && (
+            <div style={{ ...card, padding: "12px 16px", marginBottom: 20 }}>
+              <div style={{ display: "flex", height: 12, borderRadius: 6, overflow: "hidden", background: "#EEF1F4" }}>
+                {GRUPPEN_LEGENDE.map((g) => g.wert > 0 && <div key={g.id} title={`${g.label}: ${euro(g.wert)}`} style={{ width: `${(g.wert / sum.kosten) * 100}%`, background: g.farbe }} />)}
+              </div>
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 8, fontSize: 12, color: TEXT }}>
+                {GRUPPEN_LEGENDE.map((g) => (
+                  <span key={g.id} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 2, background: g.farbe }} />
+                    {g.label} <b className="mono">{Math.round((g.wert / sum.kosten) * 100)} %</b>
+                    <span style={{ color: TEXT_MUTED }} className="mono">{euro(g.wert)}</span>
+                  </span>
+                ))}
+              </div>
             </div>
           )}
 
-          <div className="fp-kpi-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginBottom: 20 }}>
-            <Kpi label="Kosten gesamt" value={euro(sum.kosten)} sub={`Fahrzeugkosten ${euro(sum.kosten - sum.gemein - sum.factoring)} + Gemeinkosten ${euro(sum.gemein)} + Factoring ${euro(sum.factoring)}`} />
-            <Kpi label="Kosten pro km" value={proKm(sum.kosten, sum.km) ? `${dez(proKm(sum.kosten, sum.km))} €` : "–"} sub={`${kmTxt(sum.km)} km lt. Einsatzplan`} />
-            <Kpi label="Umsatz" value={euro(sum.umsatz)} sub={`${sum.touren.toLocaleString("de-DE")} Touren · ${proKm(sum.umsatz, sum.km) ? dez(proKm(sum.umsatz, sum.km)) + " €/km" : "–"}`} />
-            <Kpi label="Umsatz − Kosten" value={euro(sum.umsatz - sum.kosten)} accent={sum.umsatz - sum.kosten >= 0 ? SUCCESS : DANGER}
-              sub={sum.umsatz ? `${Math.round(((sum.umsatz - sum.kosten) / sum.umsatz) * 100)} % vom Umsatz · inkl. Gemeinkosten und Factoring` : null} />
-            <Kpi label="Anteile der Kosten" value={sum.kosten ? `${Math.round((sum.diesel / sum.kosten) * 100)} % Diesel` : "–"}
-              sub={sum.kosten ? `Maut ${Math.round((sum.maut / sum.kosten) * 100)} % · Leasing/Miete ${Math.round((sum.leasing / sum.kosten) * 100)} % · Teile ${Math.round((sum.teile / sum.kosten) * 100)} %` : null} />
-          </div>
+          {/* ------------------------------------------------ C: LKW-Vergleich */}
+          {mitKm.length > 0 && (
+            <div style={card}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+                <div style={{ ...h2, marginBottom: 2 }}>LKW-Vergleich je Kilometer</div>
+                <div style={{ fontSize: 11.5, color: TEXT_MUTED, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+                  {GRUPPEN_LEGENDE.map((g) => <span key={g.id} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: g.farbe }} />{g.label}</span>)}
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 3, height: 14, background: SUCCESS, borderRadius: 1 }} />Umsatz/km</span>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: TEXT_MUTED, marginBottom: 14 }}>Balken = Kosten pro km, grüner Strich = Umsatz pro km (€). Liegt der Strich rechts vom Balken, verdient der LKW Geld. Sortiert nach Ergebnis, rechts das Ergebnis im Zeitraum.</div>
+              {mitKm.map((r) => {
+                const ckm = proKm(r.kosten, r.km), ukm = proKm(r.umsatz, r.km), e = ergebnis(r);
+                return (
+                  <div key={r.lkw} className="fp-bar-row" style={{ display: "grid", gridTemplateColumns: "92px 1fr 170px", gap: 12, alignItems: "center", padding: "7px 0", borderTop: `1px solid #F0F2F5`, cursor: "pointer" }}
+                    onClick={() => setOffenZeile(offenZeile === r.lkw ? null : r.lkw)} title="Klicken: Kostenarten in der Tabelle unten aufklappen">
+                    <div className="mono" style={{ fontWeight: 600, fontSize: 13 }}>{r.lkw}</div>
+                    <div style={{ position: "relative", height: 22 }}>
+                      <div style={{ position: "absolute", inset: "3px 0", display: "flex", borderRadius: 4, overflow: "hidden", width: `${(ckm / skala) * 100}%` }}>
+                        {gruppen(r).map((g) => g.wert > 0 && <div key={g.id} title={`${g.label}: ${dez(g.wert / r.km, 3)} €/km (${euro(g.wert)})`} style={{ width: `${(g.wert / r.kosten) * 100}%`, background: g.farbe }} />)}
+                      </div>
+                      {ukm !== null && <div title={`Umsatz ${dez(ukm, 3)} €/km`} style={{ position: "absolute", top: 0, bottom: 0, left: `calc(${(ukm / skala) * 100}% - 1.5px)`, width: 3, background: SUCCESS, borderRadius: 1 }} />}
+                    </div>
+                    <div className="mono" style={{ fontSize: 12, textAlign: "right", lineHeight: 1.35 }}>
+                      <div style={{ color: TEXT_MUTED, fontSize: 11 }}>Kosten {dez(ckm, 2)} · Umsatz {ukm !== null ? dez(ukm, 2) : "–"}</div>
+                      <div style={{ fontWeight: 600, color: geldFarbe(e) }}>{e >= 0 ? "+" : ""}{euro(e)}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
+          {/* ------------------------------------------------ D: kompakte Tabelle */}
           <div style={card}>
-            <div style={h2}>Kosten je LKW</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+              <div style={h2}>Kosten je LKW</div>
+              <div style={{ fontSize: 12, color: TEXT_MUTED }}>Zeile anklicken = Kostenarten aufklappen</div>
+            </div>
             <div style={{ overflowX: "auto" }}>
               <table>
                 <thead>
                   <tr>
-                    <th>LKW</th><th style={right}>km</th><th style={right}>Umsatz</th><th style={right}>Umsatz/km</th>
-                    <th style={right}>Diesel + AdBlue</th><th style={right}>Tank-Nebenk.</th><th style={right}>Maut</th><th style={right}>Werkstatt & Teile</th>
-                    <th style={right}>Leasing/Miete</th><th style={right} title="Laufende Kosten: Kfz-Versicherung, Kfz-Steuer und Telematik, tagesgenau verteilt">Laufende Kosten</th><th style={right} title="Fahrerkosten, über den Einsatzplan auf die LKW verteilt">Fahrer</th><th style={right} title="Gemeinkosten (Büro, Berater, Factoring, allg. Versicherungen): eigene LKW gleichmäßig, Miet-SZM nach Mietzeitraum">Gemeinkosten</th><th style={right} title="Factoring nordwest (Gebühren + Zinsen netto), nach Contargo-Umsatz verteilt">Factoring</th>
-                    <th style={right}>Kosten gesamt</th><th style={right}>Kosten/km</th><th style={right}>Umsatz − Kosten</th>
+                    <th style={{ width: 22 }}></th><th>LKW</th><th style={right}>km</th><th style={right}>Umsatz</th><th style={right}>Kosten</th><th style={right}>Ergebnis</th>
+                    <th style={right}>Umsatz/km</th><th style={right}>Kosten/km</th><th style={right}>Marge</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r) => {
-                    const ckm = proKm(r.kosten, r.km);
-                    const diff = r.umsatz - r.kosten;
-                    return (
-                      <tr key={r.lkw}>
+                  {[...tabRows, ...(rows.length > 1 ? [{ ...sum, lkw: "__SUMME__" }] : [])].map((r) => {
+                    const summe = r.lkw === "__SUMME__";
+                    const offen = offenZeile === r.lkw;
+                    const e = ergebnis(r), m = marge(r);
+                    const fett = summe ? { fontWeight: 700 } : {};
+                    return [
+                      <tr key={r.lkw} onClick={() => setOffenZeile(offen ? null : r.lkw)} style={{ cursor: "pointer", background: offen ? "#F7F9FB" : undefined, ...(summe ? { borderTop: `2px solid ${BORDER}` } : {}) }}>
+                        <td style={{ color: TEXT_MUTED }}>{offen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</td>
                         <td className="mono" style={{ fontWeight: 600, whiteSpace: "nowrap" }}>
-                          {r.lkw}
+                          {summe ? <span style={{ fontFamily: "inherit" }}>Summe</span> : r.lkw}
                           {r.lkw === AUFLIEGER
-                            ? <div style={{ fontSize: 10.5, color: TEXT_MUTED, fontWeight: 400, fontFamily: "inherit" }}>ohne festen LKW</div>
-                            : !fleetPlates.includes(r.lkw) && <div style={{ fontSize: 10.5, color: TEXT_MUTED, fontWeight: 400 }}>nicht im Fuhrpark</div>}
+                            ? <div style={{ fontSize: 10.5, color: TEXT_MUTED, fontWeight: 400 }}>ohne festen LKW</div>
+                            : !summe && !fleetPlates.includes(r.lkw) && <div style={{ fontSize: 10.5, color: TEXT_MUTED, fontWeight: 400 }}>nicht im Fuhrpark</div>}
                         </td>
-                        <td className="mono" style={right}>{kmTxt(r.km)}</td>
-                        <td className="mono" style={right}>{euro(r.umsatz)}</td>
-                        <td className="mono" style={right}>{proKm(r.umsatz, r.km) ? dez(proKm(r.umsatz, r.km)) : "–"}</td>
-                        <td className="mono" style={right}>{euro(r.diesel)}</td>
-                        <td className="mono" style={right}>{r.neben ? euro(r.neben) : "–"}</td>
-                        <td className="mono" style={right}>{euro(r.maut)}</td>
-                        <td className="mono" style={right}>{r.teile ? euro(r.teile) : "–"}</td>
-                        <td className="mono" style={right}>{r.leasing ? euro(r.leasing) : "–"}</td>
-                        <td className="mono" style={right}>{r.versSteuer ? euro(r.versSteuer) : "–"}</td>
-                        <td className="mono" style={right}>{r.fahrer ? euro(r.fahrer) : "–"}</td>
-                        <td className="mono" style={right}>{r.gemein ? euro(r.gemein) : "–"}</td>
-                        <td className="mono" style={right}>{r.factoring ? euro(r.factoring) : "–"}</td>
-                        <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(r.kosten)}</td>
-                        <td className="mono" style={{ ...right, fontWeight: 600, color: MARINE }}>
-                          {ckm ? (
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                              <span style={{ display: "inline-block", width: 40, height: 6, background: "#EEF1F4", borderRadius: 3, overflow: "hidden" }}>
-                                <span style={{ display: "block", height: 6, width: `${(ckm / maxKostenKm) * 100}%`, background: AMBER, borderRadius: 3 }} />
-                              </span>
-                              {dez(ckm)}
-                            </span>
-                          ) : "–"}
-                        </td>
-                        <td className="mono" style={{ ...right, color: diff >= 0 ? SUCCESS : DANGER }}>{euro(diff)}</td>
-                      </tr>
-                    );
+                        <td className="mono" style={{ ...right, ...fett }}>{kmTxt(r.km)}</td>
+                        <td className="mono" style={{ ...right, ...fett }}>{euro(r.umsatz)}</td>
+                        <td className="mono" style={{ ...right, ...fett }}>{euro(r.kosten)}</td>
+                        <td className="mono" style={{ ...right, fontWeight: 600, color: geldFarbe(e) }}>{euro(e)}</td>
+                        <td className="mono" style={{ ...right, ...fett }}>{proKm(r.umsatz, r.km) ? dez(proKm(r.umsatz, r.km)) : "–"}</td>
+                        <td className="mono" style={{ ...right, fontWeight: 600, color: MARINE }}>{proKm(r.kosten, r.km) ? dez(proKm(r.kosten, r.km)) : "–"}</td>
+                        <td className="mono" style={{ ...right, color: m === null ? TEXT_MUTED : geldFarbe(m) }}>{m === null ? "–" : `${Math.round(m)} %`}</td>
+                      </tr>,
+                      offen && (
+                        <tr key={r.lkw + "-d"} style={{ background: "#F7F9FB" }}>
+                          <td></td>
+                          <td colSpan={8}>
+                            <Aufschluesselung r={r} />
+                            <div style={{ fontSize: 11, color: TEXT_MUTED, padding: "0 4px 4px" }}>Beträge netto · rechte Spalte: € je km</div>
+                          </td>
+                        </tr>
+                      ),
+                    ];
                   })}
-                  {rows.length === 0 && <tr><td colSpan={16} style={{ color: TEXT_MUTED }}>Keine Daten im gewählten Zeitraum.</td></tr>}
-                  {rows.length > 1 && (
-                    <tr style={{ borderTop: `2px solid ${BORDER}` }}>
-                      <td style={{ fontWeight: 600 }}>Summe</td>
-                      <td className="mono" style={right}>{kmTxt(sum.km)}</td>
-                      <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(sum.umsatz)}</td>
-                      <td className="mono" style={right}>{proKm(sum.umsatz, sum.km) ? dez(proKm(sum.umsatz, sum.km)) : "–"}</td>
-                      <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(sum.diesel)}</td>
-                      <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(sum.neben)}</td>
-                      <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(sum.maut)}</td>
-                      <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(sum.teile)}</td>
-                      <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(sum.leasing)}</td>
-                      <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(sum.versSteuer)}</td>
-                      <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(sum.fahrer)}</td>
-                      <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(sum.gemein)}</td>
-                      <td className="mono" style={{ ...right, fontWeight: 600 }}>{euro(sum.factoring)}</td>
-                      <td className="mono" style={{ ...right, fontWeight: 700 }}>{euro(sum.kosten)}</td>
-                      <td className="mono" style={{ ...right, fontWeight: 700, color: MARINE }}>{proKm(sum.kosten, sum.km) ? dez(proKm(sum.kosten, sum.km)) : "–"}</td>
-                      <td className="mono" style={{ ...right, fontWeight: 700, color: sum.umsatz - sum.kosten >= 0 ? SUCCESS : DANGER }}>{euro(sum.umsatz - sum.kosten)}</td>
-                    </tr>
-                  )}
+                  {rows.length === 0 && <tr><td colSpan={9} style={{ color: TEXT_MUTED }}>Keine Daten im gewählten Zeitraum.</td></tr>}
                 </tbody>
               </table>
             </div>
-            <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginTop: 10, lineHeight: 1.5 }}>
-              Alle Beträge netto. km aus dem Einsatzplan (Wochen anteilig nach Tagen, unplausible Wochen ausgelassen). Umsatz = Summe der Touren
-              (Fracht, FD, ADR, Multistop, Wartezeit, Maut, Diesel). Werkstatt & Teile nach Belegdatum (Teile, Werkstattlohn, Reifen, Wartung, Prüfungen), Gutschriften verrechnet. Leasing/Miete: Monatsrate, angeschnittene Monate anteilig nach Tagen; Auflieger mit festem LKW zählen bei diesem LKW. Laufende Kosten (Versicherung, Kfz-Steuer, Telematik) tagesgenau über ihren Zeitraum verteilt. Fahrerkosten über den Einsatzplan auf die LKW verteilt. Gemeinkosten tagesgenau: eigene LKW gleichmäßig, Miet-SZM nur im Mietzeitraum. Factoring (Gebühren + Zinsen) nach Contargo-Umsatz des Monats.
-              {(auswertung.lager !== 0 || auswertung.offen !== 0) && (
-                <> Nicht enthalten: Werkstatt & Teile „Lager“ {euro(auswertung.lager)}{auswertung.offen !== 0 && <>, ohne Fahrzeug {euro(auswertung.offen)}</>}.</>
-              )}
-              {auswertung.fahrerOffen > 0.5 && <> Fahrerkosten ohne LKW-Zuordnung im Einsatzplan: {euro(auswertung.fahrerOffen)} (nicht enthalten).</>}{auswertung.verwaltung > 0.5 && <> Personalkosten Verwaltung/Büro (nicht gefahrene Tage von GF, Fuhrparkleiter, Büro): {euro(auswertung.verwaltung)} (nicht enthalten).</>}
-              {schlussraten.length > 0 && (
-                <div style={{ marginTop: 6, color: TEXT }}>
-                  <b>Schlussraten im Zeitraum (nicht in den Kosten oben enthalten):</b>{" "}
-                  {schlussraten.map((v) => `${v.kennzeichen} ${euro(v.schlussrateBetrag)} am ${dmy(v.schlussrateDatum)}`).join(" · ")}
-                  {" "}= {euro(schlussraten.reduce((s, v) => s + v.schlussrateBetrag, 0))}
-                </div>
-              )}
-            </div>
+            {(auswertung.lager !== 0 || auswertung.offen !== 0 || auswertung.fahrerOffen > 0.5 || auswertung.verwaltung > 0.5 || schlussraten.length > 0) && (
+              <div style={{ fontSize: 12, color: TEXT, marginTop: 10, lineHeight: 1.6 }}>
+                <b>Nicht in den Kosten enthalten:</b>{" "}
+                {[
+                  auswertung.lager !== 0 && `Werkstatt-Lager ${euro(auswertung.lager)}`,
+                  auswertung.offen !== 0 && `Werkstatt ohne Fahrzeug ${euro(auswertung.offen)}`,
+                  auswertung.fahrerOffen > 0.5 && `Fahrerkosten ohne LKW im Einsatzplan ${euro(auswertung.fahrerOffen)}`,
+                  auswertung.verwaltung > 0.5 && `Personal Verwaltung/Büro ${euro(auswertung.verwaltung)}`,
+                  schlussraten.length > 0 && `Schlussraten ${schlussraten.map((v) => `${v.kennzeichen} ${euro(v.schlussrateBetrag)} (${dmy(v.schlussrateDatum)})`).join(", ")}`,
+                ].filter(Boolean).join(" · ")}
+              </div>
+            )}
+            <details style={{ marginTop: 10 }}>
+              <summary style={{ cursor: "pointer", fontSize: 12.5, color: MARINE, fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 6 }}><Info size={13} /> So wird gerechnet</summary>
+              <ul style={{ fontSize: 12, color: TEXT_MUTED, lineHeight: 1.6, margin: "8px 0 0", paddingLeft: 18 }}>
+                <li>Alle Beträge netto. km aus dem Einsatzplan (Wochen anteilig nach Tagen, unplausible Wochen ausgelassen).</li>
+                <li>Umsatz = Summe der Touren (Fracht, FD, ADR, Multistop, Wartezeit, Maut, Diesel).</li>
+                <li><b>Fahren:</b> Diesel/AdBlue und Tank-Nebenkosten aus Tankpool/Shell, Maut aus Toll Collect.</li>
+                <li><b>Fahrzeug:</b> Werkstatt & Teile nach Belegdatum (Gutschriften/Förderungen verrechnet); Leasing/Miete als Monatsrate, angeschnittene Monate nach Tagen, Auflieger mit festem LKW zählen dort; Versicherung, Kfz-Steuer und Telematik tagesgenau über ihren Zeitraum.</li>
+                <li><b>Fahrer:</b> Fahrerkosten über Einsatzplan und Touren auf die LKW verteilt.</li>
+                <li><b>Gemeinkosten:</b> eigene LKW gleichmäßig, Miet-SZM nur im Mietzeitraum; Factoring (Gebühren + Zinsen) nach Contargo-Umsatz des Monats.</li>
+                <li>Ausgewertet wird nur bis zu dem Tag, bis zu dem Tank- und Mautdaten vollständig vorliegen – sonst stünden km ohne die zugehörigen Kosten da.</li>
+              </ul>
+            </details>
           </div>
 
           {proMonat.length > 1 && (
@@ -491,11 +619,14 @@ function Uebersicht({ fleet, tours, wochenKm, umsatzVon, startFilter, onFilterCh
       )}
       <style>{`
         @media (max-width: 820px) {
-          .fp-filter-grid { grid-template-columns: repeat(2, 1fr) !important; }
           .fp-kpi-grid { grid-template-columns: repeat(2, 1fr) !important; }
+          .fp-detail { grid-template-columns: 1fr !important; }
+          .fp-bar-row { grid-template-columns: 74px 1fr 112px !important; }
+          .fp-filter-row > div { width: calc(50% - 5px) !important; }
+          .fp-filter-row > .fp-filter-btns { width: 100% !important; }
         }
         @media (min-width: 821px) and (max-width: 1250px) {
-          .fp-kpi-grid { grid-template-columns: repeat(3, 1fr) !important; }
+          .fp-detail { grid-template-columns: repeat(2, 1fr) !important; }
         }
       `}</style>
     </div>
