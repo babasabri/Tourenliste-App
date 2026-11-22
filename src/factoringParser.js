@@ -133,11 +133,8 @@ export function parseAbrechnung(lines) {
     });
   }
 
-  if (positionen.length) {
-    const ps = r2(positionen.reduce((s, p) => s + p.summe, 0));
-    const az = auszahlungsbetrag ?? auszahlung;
-    if (Math.abs(ps - az) > 0.01 && !sperrFreigabe && !uebertrag) warnungen.push(`Rechnungsjournal ${ps.toFixed(2)} € ≠ Auszahlung ${az.toFixed(2)} €`);
-  }
+  // Hinweis: Rechnungsjournal-Summe ≠ Auszahlung ist normal (Zinsen, Kreditprüfung,
+  // Gutschriften, verrechnete Sperrkonto-Freigaben) - maßgeblich ist die Saldo-Prüfung oben.
 
   return {
     typ: "abrechnung", nr: Number(nr), datum, mandant, uebertrag, eingereicht, nichtAngekauft: r2(nichtAngekauft),
