@@ -37,9 +37,9 @@ const STATUS_FARBE = {
   Abgerechnet: { bg: "#99FF99", text: "#1B5E20" },
 };
 
-export default function GutschriftZuweisen({ position, tours, vorbelegt = [], belegtIds = [], onClose, onConfirm }) {
+export default function GutschriftZuweisen({ position, tours, vorbelegt = [], belegtIds = [], auchAbgerechnetStart = false, onClose, onConfirm }) {
   const [query, setQuery] = useState(position.orderNr || "");
-  const [auchAbgerechnet, setAuchAbgerechnet] = useState(false);
+  const [auchAbgerechnet, setAuchAbgerechnet] = useState(auchAbgerechnetStart);
   const [selected, setSelected] = useState(() => new Set(vorbelegt));
   // Bei Differenz: "zuordnen" (Standard: nur verknüpfen, Differenz bleibt in der
   // Prüfliste zur Kontrolle), "teil" (Teilgutschrift, nur wenn zu wenig gezahlt)

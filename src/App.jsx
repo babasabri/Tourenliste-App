@@ -14,6 +14,7 @@ import { parseGutschriftPdf } from "./gutschriftParser";
 import { supabase } from "./supabaseClient";
 import FrachtbriefEingang from "./FrachtbriefEingang";
 import GutschriftZuweisen from "./GutschriftZuweisen";
+import GutschriftNacherfassung from "./GutschriftNacherfassung";
 import { offenBetrag, offenFelder, formatFelder, felderAusZeilen, feldVergleich, fehlendeFelder, FELD_LABEL, r2 } from "./gutschriftLogik";
 import Fuhrpark from "./Fuhrpark";
 import Abwesenheiten from "./Abwesenheiten";
@@ -1554,8 +1555,10 @@ export default function TourenApp() {
   // ihre Summe genau zum Gutschrift-Betrag (typischer Fall: Contargo rechnet
   // sie als eine Position ab), sind alle schon angehakt - der Nutzer
   // bestätigt nur noch. Sonst ist nichts vorausgewählt.
-  function vorbelegungFuer(orderNr, betrag) {
-    const kandidaten = tours.filter((t) => t.auftragsNr === orderNr && t.status !== "Abgerechnet");
+  function vorbelegungFuer(orderNr, betrag, nacherfassung = false) {
+    // Nacherfassung: auch abgerechnete Touren ohne Gutschrift-Nr. sind Kandidaten.
+    const kandidaten = tours.filter((t) => t.auftragsNr === orderNr &&
+      (nacherfassung ? (t.status === "Teilabgerechnet" || !t.gutschriftNr) : t.status !== "Abgerechnet"));
     if (kandidaten.length === 0) return [];
     const sum = Math.round(kandidaten.reduce((s, t) => s + offenBetrag(t), 0) * 100) / 100;
     return Math.abs(sum - (Number(betrag) || 0)) <= 0.01 ? kandidaten.map((t) => t.id) : [];
@@ -1572,10 +1575,11 @@ export default function TourenApp() {
   }
 
   function openZuweisenReview(r) {
+    const nacherfassung = !!r.gutschrift_imports?.nacherfassung;
     const vorbelegt = r.tour_ids && r.tour_ids.length ? r.tour_ids
-      : r.tour_id ? [r.tour_id] : vorbelegungFuer(r.order_nr, r.betrag_gutschrift);
+      : r.tour_id ? [r.tour_id] : vorbelegungFuer(r.order_nr, r.betrag_gutschrift, nacherfassung);
     setGsZuweisen({
-      quelle: "review", id: r.id, vorbelegt, belegtIds: [],
+      quelle: "review", id: r.id, vorbelegt, belegtIds: [], nacherfassung,
       position: {
         orderNr: r.order_nr, kunde: r.kunde_gutschrift, betrag: r.betrag_gutschrift,
         zeilen: r.zeilen, gestellungsdatum: r.gestellungsdatum, belegNr: r.gutschrift_imports?.beleg_nr,
@@ -3242,13 +3246,9 @@ export default function TourenApp() {
               );
             })()}
 
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Prüfliste (offene Differenzen aus allen Imports)</div>
-              {gsReviewError && (
-                <div style={{ fontSize: 12.5, color: DANGER, background: DANGER_BG, borderRadius: 8, padding: "10px 14px", marginBottom: 12 }}>
-                  {gsReviewError}
-                </div>
-              )}
+            {(() => {
+              // Prüflisten-Tabelle, getrennt nach laufendem Abgleich und Nacherfassung
+              const renderListe = (rows, leer) => (
               <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, overflow: "hidden" }}>
                 <div style={{ overflowX: "auto" }}>
                   <table>
@@ -3265,10 +3265,10 @@ export default function TourenApp() {
                       {gsReviewLoading && (
                         <tr><td colSpan={8} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>Lade …</td></tr>
                       )}
-                      {!gsReviewLoading && gsReview.length === 0 && (
-                        <tr><td colSpan={8} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>Keine offenen Differenzen - alles geprüft.</td></tr>
+                      {!gsReviewLoading && rows.length === 0 && (
+                        <tr><td colSpan={8} style={{ textAlign: "center", color: TEXT_MUTED, padding: 24 }}>{leer}</td></tr>
                       )}
-                      {gsReview.map((r) => (
+                      {rows.map((r) => (
                         <tr
                           key={r.id}
                           onDoubleClick={() => (r.tour_id ? openEditFromGutschrift(r) : openZuweisenReview(r))}
@@ -3303,7 +3303,38 @@ export default function TourenApp() {
                   </table>
                 </div>
               </div>
-            </div>
+              );
+              const laufend = gsReview.filter((r) => !r.gutschrift_imports?.nacherfassung);
+              const nacherf = gsReview.filter((r) => r.gutschrift_imports?.nacherfassung);
+              return (
+                <>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Prüfliste (offene Differenzen aus dem laufenden Abgleich)</div>
+                    {gsReviewError && (
+                      <div style={{ fontSize: 12.5, color: DANGER, background: DANGER_BG, borderRadius: 8, padding: "10px 14px", marginBottom: 12 }}>
+                        {gsReviewError}
+                      </div>
+                    )}
+                    {renderListe(laufend, "Keine offenen Differenzen - alles geprüft.")}
+                  </div>
+
+                  <div style={{ marginTop: 28 }}>
+                    <GutschriftNacherfassung onChanged={async () => {
+                      try { setTours(await db.fetchTours()); } catch { /* Anzeige aktualisiert sich beim nächsten Laden */ }
+                      loadGutschriftReview();
+                    }} />
+                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+                      Nacherfassungs-Liste (Abweichungen aus alten Gutschriften{nacherf.length ? ` · ${nacherf.length} offen` : ""})
+                    </div>
+                    <div style={{ fontSize: 12, color: TEXT_MUTED, marginBottom: 10, maxWidth: 760 }}>
+                      Hier stehen nur Positionen aus der Nacherfassung. "Zuweisen" sucht auch unter bereits abgerechneten
+                      Touren ohne Gutschrift-Nr. Positionen, die nicht zu uns gehören (z. B. Touren aus 2025), mit "Erledigt" abhaken.
+                    </div>
+                    {renderListe(nacherf, "Keine offenen Positionen aus der Nacherfassung.")}
+                  </div>
+                </>
+              );
+            })()}
           </div>
         )}
 
@@ -4234,6 +4265,7 @@ export default function TourenApp() {
           tours={tours}
           vorbelegt={gsZuweisen.vorbelegt}
           belegtIds={gsZuweisen.belegtIds}
+          auchAbgerechnetStart={!!gsZuweisen.nacherfassung}
           onClose={() => setGsZuweisen(null)}
           onConfirm={confirmZuweisen}
         />

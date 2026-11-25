@@ -427,7 +427,10 @@ export async function applyGutschriftImport(meta, positionen) {
       status: p.status,
     })),
   });
-  if (error) throw error;
+  if (error) {
+    if (error.code === "23505") throw new Error(`Gutschrift ${meta.belegNr || ""} wurde bereits übernommen - doppeltes Buchen ist nicht möglich.`);
+    throw error;
+  }
   return fetchTours();
 }
 
@@ -437,7 +440,7 @@ export async function applyGutschriftImport(meta, positionen) {
 export async function fetchOffeneGutschriftPositionen() {
   const { data, error } = await supabase
     .from("gutschrift_positionen")
-    .select("*, gutschrift_imports(beleg_nr, rg_datum, dateiname, created_at)")
+    .select("*, gutschrift_imports(beleg_nr, rg_datum, dateiname, created_at, nacherfassung)")
     .neq("status", "abgerechnet")
     .eq("erledigt", false)
     .order("created_at", { ascending: false });
@@ -484,6 +487,35 @@ export async function rueckgaengigGutschriftBuchung(buchungId) {
   if (error) throw error;
   const [touren, review] = await Promise.all([fetchTours(), fetchOffeneGutschriftPositionen()]);
   return { touren, review };
+}
+
+// ---------------------------------------------- Nacherfassung alter Gutschriften --
+// Vorprüfung ohne Schreiben: Zählt, was beim Import passieren würde.
+export async function pruefenNacherfassung(belegNr, positionen) {
+  const { data, error } = await supabase.rpc("gutschrift_nacherfassung_pruefen", {
+    p_beleg_nr: belegNr, p_positionen: positionen,
+  });
+  if (error) throw error;
+  return data;
+}
+
+// Import: exakte Treffer werden gebucht, Rest landet offen in der Nacherfassungs-Liste.
+export async function importNacherfassung(meta, positionen) {
+  const { data, error } = await supabase.rpc("gutschrift_nacherfassung_import", {
+    p_dateiname: meta.dateiname,
+    p_beleg_nr: meta.belegNr,
+    p_rg_datum: meta.rgDatum || null,
+    p_dokument_summe: meta.dokumentSumme,
+    p_positionen: positionen,
+  });
+  if (error) throw error;
+  return data;
+}
+
+// Nimmt einen kompletten Nacherfassungs-Import zurück.
+export async function rueckgaengigImport(importId) {
+  const { error } = await supabase.rpc("gutschrift_import_rueckgaengig", { p_import_id: importId });
+  if (error) throw error;
 }
 
 // Alle Gutschriften (auch Teilgutschriften) einer Tour, älteste zuerst.
