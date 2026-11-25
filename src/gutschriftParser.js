@@ -45,8 +45,8 @@ export function loadPdfjs() {
 // angehängtem Freitext wie "Wartezeit Merck 1,5 std" oder "FD , Anlieferung
 // durch ..."): per startsWith/Regex-Präfix erkannt, nicht per exaktem String.
 const KOSTENART_RULES = [
-  { feld: "maut", test: (l) => /^Trucking\s+Maut/i.test(l) },
-  { feld: "wartezeit", test: (l) => /^Trucking\s+Wartezeit/i.test(l) || /^Wartezeit/i.test(l) },
+  { feld: "maut", test: (l) => /^Trucking\s+Maut/i.test(l) || /^Maut\b/i.test(l) },
+  { feld: "wartezeit", test: (l) => /^Trucking\s+Wartezeit/i.test(l) || /^Wartezeit/i.test(l) || /^WZ\b/i.test(l) },
   { feld: "diesel", test: (l) => /Dieselzuschlag/i.test(l) },
   { feld: "adr", test: (l) => /Gefahrgut/i.test(l) || /^ADR\b/i.test(l) },
   { feld: "multistop", test: (l) => /^Trucking\s+Multistop/i.test(l) },

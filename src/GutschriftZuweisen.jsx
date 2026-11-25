@@ -44,6 +44,7 @@ export default function GutschriftZuweisen({ position, tours, vorbelegt = [], be
   // oder "voll" (trotzdem voll abrechnen, Differenz ausbuchen).
   const [modus, setModus] = useState("zuordnen");
   const [restTourWahl, setRestTourWahl] = useState(null);
+  const [ausbuchenNotiz, setAusbuchenNotiz] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -104,6 +105,7 @@ export default function GutschriftZuweisen({ position, tours, vorbelegt = [], be
   const hatDifferenz = gewaehlt.length > 0 && !passt;
   const teilAktiv = zuWenig && modus === "teil";
   const nurZuordnen = hatDifferenz && (modus === "zuordnen" || (modus === "teil" && !zuWenig));
+  const vollMitAusbuchen = zuWenig && modus === "voll";
 
   function toggle(id) {
     setSelected((prev) => {
@@ -119,16 +121,25 @@ export default function GutschriftZuweisen({ position, tours, vorbelegt = [], be
         ? { tourId: t.id, betrag: Math.max(0, restBuchung), betragTour: offenBetrag(t), teil: true, offenFelder: fehlend }
         : { tourId: t.id, betrag: offenBetrag(t), betragTour: offenBetrag(t), teil: false }));
     }
-    // Voll abrechnen: jede Tour bekommt ihren offenen Betrag, eine eventuelle
-    // Abweichung wird bei der ersten Tour verrechnet (Summe = Gutschrift).
+    // Voll abrechnen: jede Tour bekommt ihren offenen Betrag gebucht; die
+    // Abweichung wird bei der ersten Tour verrechnet. Zahlt die Gutschrift
+    // weniger, wird der Rest dort als "Differenz ausgebucht" (mit Grund) gebucht,
+    // damit die Tour wirklich abgerechnet ist.
     const z = gewaehlt.map((t) => ({ tourId: t.id, betrag: offenBetrag(t), betragTour: offenBetrag(t), teil: false }));
-    if (z.length) z[0].betrag = r2(z[0].betrag + differenz);
+    if (z.length) {
+      z[0].betrag = r2(z[0].betrag + differenz);
+      if (differenz < -0.01) {
+        z[0].ausbuchen = -differenz;
+        z[0].notiz = ausbuchenNotiz.trim();
+      }
+    }
     return z;
   }
 
   async function bestaetigen() {
     if (gewaehlt.length === 0) return;
     if (teilAktiv && !teilMoeglich) return;
+    if (vollMitAusbuchen && !ausbuchenNotiz.trim()) return;
     setBusy(true);
     setError("");
     try {
@@ -315,8 +326,18 @@ export default function GutschriftZuweisen({ position, tours, vorbelegt = [], be
             )}
             <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer" }}>
               <input type="radio" checked={modus === "voll"} onChange={() => setModus("voll")} style={{ marginTop: 3 }} />
-              <span><b>Trotzdem voll abrechnen</b> - Differenz von {euro(differenz)} wird nicht weiter verfolgt, Tour(en) werden sofort <b>Abgerechnet</b>.</span>
+              <span>
+                {zuWenig
+                  ? <><b>Differenz ausbuchen</b> - fehlende {euro(-differenz)} werden mit Begründung ausgebucht, Tour(en) werden <b>Abgerechnet</b>.</>
+                  : <><b>Abrechnen</b> - Mehrbetrag von {euro(differenz)} wird mitgebucht, Tour(en) werden <b>Abgerechnet</b>.</>}
+              </span>
             </label>
+            {vollMitAusbuchen && (
+              <div style={{ margin: "8px 0 0 26px" }}>
+                <input value={ausbuchenNotiz} onChange={(e) => setAusbuchenNotiz(e.target.value)}
+                  placeholder="Grund (Pflicht), z. B. Maut-Rundung akzeptiert" style={{ width: "100%" }} />
+              </div>
+            )}
           </div>
         )}
 
@@ -342,7 +363,7 @@ export default function GutschriftZuweisen({ position, tours, vorbelegt = [], be
         <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14 }}>
           <button className="ghost" onClick={onClose} disabled={busy}>Abbrechen</button>
           {(() => {
-            const disabled = busy || gewaehlt.length === 0 || (teilAktiv && !teilMoeglich);
+            const disabled = busy || gewaehlt.length === 0 || (teilAktiv && !teilMoeglich) || (vollMitAusbuchen && !ausbuchenNotiz.trim());
             return (
               <button className="primary" onClick={bestaetigen} disabled={disabled} style={disabled ? { opacity: 0.6, cursor: "default" } : undefined}>
                 {busy ? <Loader2 size={15} /> : <CheckCircle2 size={15} />} {btnLabel}

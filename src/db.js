@@ -478,6 +478,14 @@ export async function verknuepfenGutschriftPosition(positionId, tourIds) {
   return fetchOffeneGutschriftPositionen();
 }
 
+// Nimmt eine Gutschrift-Buchung zurück (RPC gutschrift_buchung_rueckgaengig).
+export async function rueckgaengigGutschriftBuchung(buchungId) {
+  const { error } = await supabase.rpc("gutschrift_buchung_rueckgaengig", { p_buchung_id: buchungId });
+  if (error) throw error;
+  const [touren, review] = await Promise.all([fetchTours(), fetchOffeneGutschriftPositionen()]);
+  return { touren, review };
+}
+
 // Alle Gutschriften (auch Teilgutschriften) einer Tour, älteste zuerst.
 export async function fetchTourGutschriften(tourId) {
   const { data, error } = await supabase

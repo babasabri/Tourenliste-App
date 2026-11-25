@@ -14,7 +14,7 @@ import { parseGutschriftPdf } from "./gutschriftParser";
 import { supabase } from "./supabaseClient";
 import FrachtbriefEingang from "./FrachtbriefEingang";
 import GutschriftZuweisen from "./GutschriftZuweisen";
-import { offenBetrag, formatFelder, felderAusZeilen, FELD_LABEL, r2 } from "./gutschriftLogik";
+import { offenBetrag, offenFelder, formatFelder, felderAusZeilen, feldVergleich, fehlendeFelder, FELD_LABEL, r2 } from "./gutschriftLogik";
 import Fuhrpark from "./Fuhrpark";
 import Abwesenheiten from "./Abwesenheiten";
 // Export-Bibliotheken (jsPDF, ExcelJS) sind vergleichsweise groß - werden per
@@ -698,9 +698,11 @@ export default function TourenApp() {
   const [editGsHistory, setEditGsHistory] = useState(null);
   // Gutschrift-Position, aus der das Bearbeiten-Fenster geöffnet wurde (für den
   // Vergleich je Kostenart im Fenster): { positionId?, orderNr, betrag, zeilen,
-  // belegNr }. gsAbrechnen = Häkchen "beim Speichern abrechnen" (Prüfliste).
+  // belegNr }. gsAusbuchenNotiz: Pflicht-Grund beim Ausbuchen einer Differenz.
   const [editGsVergleich, setEditGsVergleich] = useState(null);
-  const [gsAbrechnen, setGsAbrechnen] = useState(true);
+  const [gsAusbuchenOffen, setGsAusbuchenOffen] = useState(false);
+  const [gsAusbuchenNotiz, setGsAusbuchenNotiz] = useState("");
+  const [gsBusy, setGsBusy] = useState(false);
   const [editId, setEditId] = useState(null);
   const [editForm, setEditForm] = useState(null);
   useEffect(() => {
@@ -1713,7 +1715,8 @@ export default function TourenApp() {
     setEditForm({ ...t });
     setEditFromGutschriftId(null);
     setEditGsVergleich(null);
-    setGsAbrechnen(true);
+    setGsAusbuchenOffen(false);
+    setGsAusbuchenNotiz("");
     setConfirmDelete(false);
     setEditErrors([]);
     setEditSaveNote("");
@@ -1736,30 +1739,89 @@ export default function TourenApp() {
     const toSave = editForm.andererAuftraggeber ? clearLockedFields(editForm) : { ...editForm };
     const saving = persistTours(tours.map((t) => (t.id === editId ? toSave : t)));
     if (gsPreview) saving.then(refreshGsPreview);
-    // Kam das Bearbeiten-Fenster aus der Gutschriften-Prüfliste, gilt die Zeile
-    // mit dem Speichern als erledigt (bessere Übersicht - kein zusätzlicher
-    // Klick auf "Erledigt" mehr nötig).
+    // Aus der Prüfliste geöffnet und nur gespeichert: Zeile bleibt offen, ihre
+    // Beträge (Tour/Differenz) werden aktualisiert. Abrechnen läuft nur über
+    // die Gutschrift-Knöpfe unten im Fenster (gsAbschliessen).
     if (editFromGutschriftId) {
       const posId = editFromGutschriftId;
-      const passt = editGsVergleich && Math.abs(r2(gesamt(toSave)) - r2(editGsVergleich.betrag)) <= 0.01;
-      if (passt && gsAbrechnen) {
-        // Summe passt jetzt zur Gutschrift -> Tour direkt mit dieser Gutschrift
-        // abrechnen (Status, Gutschrift-Nr., Historie), Zeile wird erledigt.
-        const betrag = r2(editGsVergleich.betrag);
-        saving.then((ok) => {
-          if (ok === false) return;
-          db.zuweisenGutschriftPosition(posId, [{ tourId: toSave.id, betrag, betragTour: betrag, teil: false }])
-            .then(({ touren, review }) => { setTours(touren); setGsReview(review); })
-            .catch((err) => setGsReviewError(err.message || "Abrechnen fehlgeschlagen."));
-        });
-      } else {
-        handleGutschriftErledigt(posId);
-      }
+      saving.then((ok) => {
+        if (ok === false) return;
+        db.verknuepfenGutschriftPosition(posId, [toSave.id]).then(setGsReview).catch(() => {});
+      });
       setEditFromGutschriftId(null);
     }
     setEditGsVergleich(null);
     setEditId(null);
     setEditForm(null);
+  }
+
+  // Abschluss einer Prüflisten-Position aus dem Bearbeiten-Fenster:
+  //   "abrechnen"  - Gutschrift-Betrag buchen (Summe passt oder GS zahlt mehr)
+  //   "teil"       - Teilgutschrift buchen, Rest je Kostenart bleibt offen
+  //   "ausbuchen"  - Gutschrift buchen + Differenz mit Begründung ausbuchen
+  // Die Tour wird zuerst gespeichert, dann gebucht. Status ergibt sich in der
+  // Datenbank automatisch aus den Buchungen.
+  async function gsAbschliessen(aktion) {
+    const v = editGsVergleich;
+    if (!v?.positionId) return;
+    const missing = getMissingFields(editForm);
+    if (missing.length > 0) {
+      setEditErrors(missing);
+      setEditSaveNote(`Bitte noch ausfüllen: ${missingLabel(missing)}`);
+      return;
+    }
+    if (aktion === "ausbuchen" && !gsAusbuchenNotiz.trim()) {
+      setEditSaveNote("Bitte einen Grund für das Ausbuchen der Differenz angeben.");
+      return;
+    }
+    const toSave = editForm.andererAuftraggeber ? clearLockedFields(editForm) : { ...editForm };
+    const betragGs = r2(v.betrag);
+    const offen = offenBetrag(toSave);
+    const rest = r2(offen - betragGs); // > 0: Gutschrift zahlt weniger
+    const eintrag = { tourId: toSave.id, betrag: betragGs, betragTour: offen, teil: false };
+    if (aktion === "teil") {
+      eintrag.teil = true;
+      eintrag.offenFelder = fehlendeFelder(feldVergleich(offenFelder(toSave), felderAusZeilen(v.zeilen)), rest);
+    } else if (aktion === "ausbuchen" && rest > 0.01) {
+      eintrag.ausbuchen = rest;
+      eintrag.notiz = gsAusbuchenNotiz.trim();
+    }
+    setGsBusy(true);
+    setEditSaveNote("");
+    const ok = await persistTours(tours.map((t) => (t.id === editId ? toSave : t)));
+    if (ok === false) { setGsBusy(false); return; }
+    try {
+      const { touren, review } = await db.zuweisenGutschriftPosition(v.positionId, [eintrag]);
+      setTours(touren);
+      setGsReview(review);
+      setEditFromGutschriftId(null);
+      setEditGsVergleich(null);
+      setEditId(null);
+      setEditForm(null);
+    } catch (err) {
+      setEditSaveNote(err.message || "Buchen fehlgeschlagen.");
+    } finally {
+      setGsBusy(false);
+    }
+  }
+
+  // Nimmt eine Gutschrift-Buchung zurück (bei Positionen: alle Buchungen der
+  // Position; sie erscheint dann wieder in der Prüfliste).
+  async function gsBuchungRueckgaengig(buchung) {
+    const text = buchung.position_id
+      ? `Buchung der Gutschrift ${buchung.gutschrift_nr || ""} zurücknehmen? Die Position erscheint wieder in der Prüfliste, der Tourstatus wird neu berechnet.`
+      : "Diese Buchung zurücknehmen? Der Tourstatus wird neu berechnet.";
+    if (!window.confirm(text)) return;
+    try {
+      const { touren, review } = await db.rueckgaengigGutschriftBuchung(buchung.id);
+      setTours(touren);
+      setGsReview(review);
+      const neu = touren.find((t) => t.id === editId);
+      if (neu) setEditForm({ ...neu });
+      setEditGsHistory(await db.fetchTourGutschriften(editId));
+    } catch (err) {
+      setEditSaveNote(err.message || "Zurücknehmen fehlgeschlagen.");
+    }
   }
 
   function deleteTour(id) {
@@ -3221,7 +3283,7 @@ export default function TourenApp() {
                                 <Pencil size={13} />
                               </button>
                             )}
-                            <button className="ghost" style={{ padding: "4px 8px" }} onClick={() => handleGutschriftErledigt(r.id)} title="Als erledigt markieren (z.B. nach manueller Korrektur der Tour)">
+                            <button className="ghost" style={{ padding: "4px 8px" }} onClick={() => handleGutschriftErledigt(r.id)} title="Ohne Buchung als erledigt markieren (z. B. Position gehört nicht zu uns) - Tour bleibt unverändert, bekommt keine Gutschrift-Nr.">
                               <CheckCircle2 size={13} /> Erledigt
                             </button>
                           </td>
@@ -3441,9 +3503,9 @@ export default function TourenApp() {
                               <select autoFocus value={t.status} style={{ width: 130 }}
                                 onChange={(e) => quickChangeStatus(t.id, e.target.value)}
                                 onBlur={() => setQuickStatusId(null)}>
-                                <option>Offen</option><option>Reklamiert</option><option>Teilabgerechnet</option><option>Abgerechnet</option>
+                                <option>Offen</option><option>Reklamiert</option><option>Abgerechnet</option>
                               </select>
-                            ) : (
+                            ) : t.betragGutgeschrieben != null ? null : (
                               <button className="ghost" onClick={() => setQuickStatusId(t.id)} style={{ padding: "4px 8px" }} title="Status ändern">
                                 <RefreshCw size={13} />
                               </button>
@@ -4172,9 +4234,9 @@ export default function TourenApp() {
           <div style={{ background: CARD, borderRadius: 12, padding: 24, width: editGsVergleich ? 680 : 560, maxWidth: "calc(100vw - 24px)", maxHeight: "85vh", overflowY: "auto" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <div style={{ fontSize: 15, fontWeight: 600 }}>Tour bearbeiten</div>
-              <button className="ghost" style={{ padding: 6 }} onClick={() => { setEditId(null); setEditForm(null); setEditFromGutschriftId(null); setEditGsVergleich(null); setConfirmDelete(false); setEditErrors([]); setEditSaveNote(""); }}><X size={15} /></button>
+              <button className="ghost" style={{ padding: 6 }} onClick={() => { setEditId(null); setEditForm(null); setEditFromGutschriftId(null); setEditGsVergleich(null); setGsAusbuchenOffen(false); setGsAusbuchenNotiz(""); setConfirmDelete(false); setEditErrors([]); setEditSaveNote(""); }}><X size={15} /></button>
             </div>
-            {editForm.gutschriftNr && (() => {
+            {(editForm.gutschriftNr || (editGsHistory && editGsHistory.length > 0)) && (() => {
               const teil = editForm.status === "Teilabgerechnet";
               const liste = editGsHistory && editGsHistory.length > 0 ? editGsHistory : null;
               return (
@@ -4182,16 +4244,7 @@ export default function TourenApp() {
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <Receipt size={14} />
                     {liste ? (
-                      <span>
-                        Gutschrift{liste.length > 1 ? "en" : ""}:{" "}
-                        {liste.map((g, i) => (
-                          <span key={g.id}>
-                            {i > 0 ? " · " : ""}
-                            <span className="mono" style={{ fontWeight: 700 }}>{g.gutschrift_nr}</span>
-                            {g.gutschrift_datum ? ` vom ${formatDateDMY(g.gutschrift_datum)}` : ""} ({euro(g.betrag)}{g.teil ? ", Teil" : ""})
-                          </span>
-                        ))}
-                      </span>
+                      <span style={{ fontWeight: 600 }}>Gutschrift-Buchungen (Status ergibt sich daraus)</span>
                     ) : (
                       <span>
                         Abgerechnet über Gutschrift-Nr. <span className="mono" style={{ fontWeight: 700 }}>{editForm.gutschriftNr}</span>
@@ -4199,8 +4252,27 @@ export default function TourenApp() {
                       </span>
                     )}
                   </div>
+                  {liste && (
+                    <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 3 }}>
+                      {liste.map((g) => (
+                        <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span className="mono" style={{ minWidth: 80, textAlign: "right", fontWeight: 700 }}>{euro(g.betrag)}</span>
+                          <span>
+                            {g.art === "ausbuchung" ? "Differenz ausgebucht" : g.art === "altbestand" ? "Altbestand" : g.teil ? "Teilgutschrift" : "Gutschrift"}
+                            {g.gutschrift_nr ? <> <span className="mono" style={{ fontWeight: 700 }}>{g.gutschrift_nr}</span></> : ""}
+                            {g.gutschrift_datum ? ` vom ${formatDateDMY(g.gutschrift_datum)}` : ""}
+                            {g.notiz ? <span style={{ color: TEXT_MUTED }}> · {g.notiz}</span> : ""}
+                          </span>
+                          <button type="button" className="ghost" style={{ padding: "1px 7px", fontSize: 11, marginLeft: "auto" }}
+                            title="Buchung zurücknehmen" onClick={() => gsBuchungRueckgaengig(g)}>
+                            <Undo2 size={11} /> Zurücknehmen
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {teil && (
-                    <div style={{ marginTop: 4, fontWeight: 600 }}>
+                    <div style={{ marginTop: 6, fontWeight: 600 }}>
                       Noch offen: {euro(offenBetrag(editForm))}{formatFelder(editForm.offenFelder) ? ` (${formatFelder(editForm.offenFelder)})` : ""}
                     </div>
                   )}
@@ -4211,13 +4283,16 @@ export default function TourenApp() {
               // Vergleich je Kostenart: aktuelle Werte im Formular (live) gegen die
               // Zeilen der Gutschrift-Position.
               const gsF = felderAusZeilen(editGsVergleich.zeilen);
-              const felder = [...COSTFIELDS, "sonstige"].filter((k) => r2(editForm[k]) || r2(gsF[k]));
+              // Bereits teilabgerechnete Tour: nur der offene Rest wird verglichen.
+              const gebucht = editForm.status === "Teilabgerechnet";
+              const tourF = gebucht ? offenFelder(editForm) : null;
+              const felder = [...COSTFIELDS, "sonstige"].filter((k) => r2(tourF ? tourF[k] : editForm[k]) || r2(gsF[k]));
               const rows = felder.map((k) => {
-                const tour = k === "sonstige" ? 0 : r2(editForm[k]);
+                const tour = tourF ? r2(tourF[k]) : k === "sonstige" ? 0 : r2(editForm[k]);
                 const gs = r2(gsF[k]);
                 return { k, tour, gs, diff: r2(gs - tour) };
               });
-              const sumTour = r2(gesamt(editForm));
+              const sumTour = r2(offenBetrag(editForm));
               const sumGs = r2(editGsVergleich.betrag);
               const passt = Math.abs(sumGs - sumTour) <= 0.01;
               return (
@@ -4237,7 +4312,7 @@ export default function TourenApp() {
                       </thead>
                       <tbody>
                         <tr>
-                          <td style={{ fontWeight: 600 }}>Tour</td>
+                          <td style={{ fontWeight: 600 }}>{gebucht ? "Tour offen" : "Tour"}</td>
                           {rows.map((r) => <td key={r.k} className="mono" style={{ textAlign: "right" }}>{euro(r.tour)}</td>)}
                           <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>{euro(sumTour)}</td>
                         </tr>
@@ -4253,7 +4328,7 @@ export default function TourenApp() {
                               {Math.abs(r.diff) > 0.01 ? (
                                 <>
                                   {r.diff > 0 ? "+" : ""}{euro(r.diff)}
-                                  {r.k !== "sonstige" && (
+                                  {r.k !== "sonstige" && !gebucht && (
                                     <div>
                                       <button type="button" className="ghost" style={{ padding: "1px 6px", fontSize: 10.5, marginTop: 2 }}
                                         title="Betrag aus der Gutschrift in die Tour übernehmen"
@@ -4276,11 +4351,11 @@ export default function TourenApp() {
                       Zeilen laut Gutschrift: {editGsVergleich.zeilen.map((z, i) => <span key={i}>{i > 0 ? " · " : ""}{z.label} {euro(z.betrag)}</span>)}
                     </div>
                   )}
-                  {editGsVergleich.positionId && passt && (
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 12.5, cursor: "pointer" }}>
-                      <input type="checkbox" style={{ width: "auto", margin: 0 }} checked={gsAbrechnen} onChange={(e) => setGsAbrechnen(e.target.checked)} />
-                      Beim Speichern mit dieser Gutschrift abrechnen (Status "Abgerechnet" + Gutschrift-Nr.)
-                    </label>
+                  {editGsVergleich.positionId && (
+                    <div style={{ fontSize: 11.5, color: TEXT_MUTED, marginTop: 6 }}>
+                      Abschluss über die Knöpfe unten: abrechnen, als Teilgutschrift buchen oder Differenz ausbuchen.
+                      "Nur speichern" lässt die Position in der Prüfliste.
+                    </div>
                   )}
                 </div>
               );
@@ -4380,13 +4455,13 @@ export default function TourenApp() {
                   <input type="number" value={editForm[k]} disabled={locked}
                     style={(() => {
                       const base = lockStyle(locked);
-                      if (!editGsVergleich) return base;
+                      if (!editGsVergleich || editForm.status === "Teilabgerechnet") return base;
                       const gs = r2(felderAusZeilen(editGsVergleich.zeilen)[k]);
                       if (Math.abs(gs - r2(editForm[k])) <= 0.01) return base;
                       return { ...(base || {}), borderColor: DANGER, background: "#FFF3EE" };
                     })()}
                     onChange={(e) => setEditForm({ ...editForm, [k]: e.target.value })} />
-                  {editGsVergleich && Math.abs(r2(felderAusZeilen(editGsVergleich.zeilen)[k]) - r2(editForm[k])) > 0.01 && (
+                  {editGsVergleich && editForm.status !== "Teilabgerechnet" && Math.abs(r2(felderAusZeilen(editGsVergleich.zeilen)[k]) - r2(editForm[k])) > 0.01 && (
                     <div style={{ fontSize: 10.5, color: DANGER, marginTop: 2 }}>Gutschrift: {euro(felderAusZeilen(editGsVergleich.zeilen)[k] || 0)}</div>
                   )}
                 </div>
@@ -4395,11 +4470,28 @@ export default function TourenApp() {
               <div style={{ gridColumn: "1 / -1" }}><label>Bemerkungen</label><textarea rows={2} value={editForm.bemerkungen} onChange={(e) => setEditForm({ ...editForm, bemerkungen: e.target.value })} /></div>
               <div style={{ gridColumn: "1 / -1" }}>
                 <label>Status *</label>
-                <select value={editForm.status} style={statusFieldStyle(editForm.status, editErrors)}
-                  onChange={(e) => { setEditForm({ ...editForm, status: e.target.value }); setEditErrors(editErrors.filter((k) => k !== "status")); }}>
-                  <option value="">Bitte wählen …</option>
-                  <option>Offen</option><option>Reklamiert</option><option>Teilabgerechnet</option><option>Abgerechnet</option>
-                </select>
+                {(() => {
+                  // Touren mit Gutschrift-Buchungen: Status ergibt sich daraus und ist
+                  // hier gesperrt (Änderung nur über "Zurücknehmen" der Buchung).
+                  const gebucht = (editGsHistory && editGsHistory.length > 0) || editForm.betragGutgeschrieben != null;
+                  return (
+                    <>
+                      <select value={editForm.status} disabled={gebucht}
+                        style={{ ...(statusFieldStyle(editForm.status, editErrors) || {}), ...(gebucht ? { cursor: "not-allowed", opacity: 0.85 } : {}) }}
+                        onChange={(e) => { setEditForm({ ...editForm, status: e.target.value }); setEditErrors(editErrors.filter((k) => k !== "status")); }}>
+                        <option value="">Bitte wählen …</option>
+                        <option>Offen</option><option>Reklamiert</option>
+                        {gebucht && <option>Teilabgerechnet</option>}
+                        <option>Abgerechnet</option>
+                      </select>
+                      {gebucht && (
+                        <div style={{ fontSize: 11, color: TEXT_MUTED, marginTop: 3 }}>
+                          Ergibt sich aus den Gutschrift-Buchungen oben - ändern über "Zurücknehmen".
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </div>
             <div style={{ marginTop: 18, background: BG, borderRadius: 8, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -4425,8 +4517,52 @@ export default function TourenApp() {
             )}
             <div style={{ marginTop: 16, display: "flex", justifyContent: "space-between" }}>
               <button className="ghost" style={{ color: DANGER, borderColor: DANGER_BG }} onClick={() => setConfirmDelete(true)}><Trash2 size={14} /> Löschen</button>
-              <button className="primary" onClick={saveEdit}><Save size={14} /> Speichern</button>
+              {editGsVergleich?.positionId ? (() => {
+                const rest = r2(offenBetrag(editForm) - r2(editGsVergleich.betrag)); // > 0: GS zahlt weniger
+                const passt = Math.abs(rest) <= 0.01;
+                const dis = gsBusy ? { opacity: 0.6, cursor: "default" } : undefined;
+                return (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <button className="ghost" disabled={gsBusy} onClick={saveEdit} title="Tour speichern, Position bleibt in der Prüfliste">
+                      <Save size={14} /> Nur speichern
+                    </button>
+                    {rest > 0.01 && (
+                      <>
+                        <button className="ghost" disabled={gsBusy} style={dis} onClick={() => setGsAusbuchenOffen(!gsAusbuchenOffen)}
+                          title="Gutschrift buchen und die Differenz bewusst nicht weiter verfolgen">
+                          Differenz ausbuchen …
+                        </button>
+                        <button className="primary" disabled={gsBusy} style={{ ...(dis || {}), background: "#0B3D6B", color: "#fff" }} onClick={() => gsAbschliessen("teil")}
+                          title={`${euro(editGsVergleich.betrag)} buchen, offen bleiben ${euro(rest)}`}>
+                          <CheckCircle2 size={14} /> Als Teilgutschrift buchen (offen {euro(rest)})
+                        </button>
+                      </>
+                    )}
+                    {rest <= 0.01 && (
+                      <button className="primary" disabled={gsBusy} style={dis} onClick={() => gsAbschliessen("abrechnen")}>
+                        <CheckCircle2 size={14} /> {passt ? "Speichern & abrechnen" : `Abrechnen (Gutschrift zahlt ${euro(-rest)} mehr)`}
+                      </button>
+                    )}
+                  </div>
+                );
+              })() : (
+                <button className="primary" onClick={saveEdit}><Save size={14} /> Speichern</button>
+              )}
             </div>
+            {editGsVergleich?.positionId && gsAusbuchenOffen && (
+              <div style={{ marginTop: 10, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "10px 12px", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12.5 }}>
+                  Differenz {euro(r2(offenBetrag(editForm) - r2(editGsVergleich.betrag)))} ausbuchen - Grund:
+                </span>
+                <input value={gsAusbuchenNotiz} onChange={(e) => setGsAusbuchenNotiz(e.target.value)}
+                  placeholder="z. B. Maut-Rundung akzeptiert, mit Contargo geklärt" style={{ flex: "1 1 240px" }} />
+                <button className="primary" disabled={gsBusy || !gsAusbuchenNotiz.trim()}
+                  style={gsBusy || !gsAusbuchenNotiz.trim() ? { opacity: 0.6, cursor: "default" } : undefined}
+                  onClick={() => gsAbschliessen("ausbuchen")}>
+                  Buchen & ausbuchen
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
