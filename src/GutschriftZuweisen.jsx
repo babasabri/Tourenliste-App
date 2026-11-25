@@ -27,6 +27,8 @@ const WARN_BG = "#FDF1DD";
 const dmy = (iso) => (iso ? iso.slice(0, 10).split("-").reverse().join(".") : "");
 const euro = (n) => (Number(n) || 0).toLocaleString("de-DE", { style: "currency", currency: "EUR" });
 const norm = (s) => String(s || "").toLowerCase().replace(/\s+/g, "");
+// Vollständig abgerechnet + Gutschrift-Nr. = gesperrt (s. tours_sperre in der DB)
+const gesperrt = (t) => t.status === "Abgerechnet" && !!t.gutschriftNr;
 
 const STATUS_FARBE = {
   Offen: { bg: "#FFFF99", text: "#6B5900" },
@@ -218,8 +220,10 @@ export default function GutschriftZuweisen({ position, tours, vorbelegt = [], be
                 const sf = STATUS_FARBE[t.status] || STATUS_FARBE.Offen;
                 const exakt = norm(t.auftragsNr) === orderNorm;
                 return (
-                  <tr key={t.id} onClick={() => toggle(t.id)} style={{ cursor: "pointer", background: sel ? "#E7F1FB" : undefined }}>
-                    <td><input type="checkbox" checked={sel} onChange={() => toggle(t.id)} onClick={(e) => e.stopPropagation()} /></td>
+                  <tr key={t.id} onClick={() => !gesperrt(t) && toggle(t.id)}
+                    title={gesperrt(t) ? "Vollständig abgerechnet und gesperrt - kann keiner weiteren Position zugewiesen werden" : undefined}
+                    style={{ cursor: gesperrt(t) ? "not-allowed" : "pointer", opacity: gesperrt(t) ? 0.55 : 1, background: sel ? "#E7F1FB" : undefined }}>
+                    <td><input type="checkbox" checked={sel} disabled={gesperrt(t)} onChange={() => toggle(t.id)} onClick={(e) => e.stopPropagation()} /></td>
                     <td className="mono">{dmy(t.datum)}</td>
                     <td className="mono">{t.lkw}</td>
                     <td>{t.fahrer}</td>

@@ -128,6 +128,13 @@ const ANDERER_GESPERRT = ["containerNr", "ankunft", "abfahrt", "km", "fd", "adr"
 const ANDERER_NICHT_PFLICHT = ["containerNr", "ankunft", "abfahrt", "km"];
 const OTHER_CLIENT_COLOR = "#1D4ED8";
 
+// Vollständig abgerechnete Tour mit Gutschrift-Nr. ist gesperrt (auch in der
+// Datenbank per Trigger tours_sperre): nicht änderbar, nicht löschbar.
+// Entsperren nur durch "Zurücknehmen" der Gutschrift-Buchung.
+function tourGesperrt(t) {
+  return !!t && t.status === "Abgerechnet" && !!t.gutschriftNr;
+}
+
 function lockStyle(locked) {
   return locked ? { opacity: 0.5, cursor: "not-allowed", background: "#F1F3F5" } : undefined;
 }
@@ -1808,9 +1815,12 @@ export default function TourenApp() {
   // Nimmt eine Gutschrift-Buchung zurück (bei Positionen: alle Buchungen der
   // Position; sie erscheint dann wieder in der Prüfliste).
   async function gsBuchungRueckgaengig(buchung) {
-    const text = buchung.position_id
+    const gesperrtHinweis = tourGesperrt(editForm)
+      ? "ACHTUNG: Die Tour ist vollständig abgerechnet und gesperrt. Durch das Zurücknehmen wird sie entsperrt.\n\n"
+      : "";
+    const text = gesperrtHinweis + (buchung.position_id
       ? `Buchung der Gutschrift ${buchung.gutschrift_nr || ""} zurücknehmen? Die Position erscheint wieder in der Prüfliste, der Tourstatus wird neu berechnet.`
-      : "Diese Buchung zurücknehmen? Der Tourstatus wird neu berechnet.";
+      : "Diese Buchung zurücknehmen? Der Tourstatus wird neu berechnet.");
     if (!window.confirm(text)) return;
     try {
       const { touren, review } = await db.rueckgaengigGutschriftBuchung(buchung.id);
@@ -4360,6 +4370,12 @@ export default function TourenApp() {
                 </div>
               );
             })()}
+            {tourGesperrt(editForm) && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#1B5E20", background: "#E7F6EF", border: "1px solid #BFE5D3", borderRadius: 8, padding: "8px 12px", marginBottom: 14, fontWeight: 600 }}>
+                🔒 Vollständig abgerechnet - Tour ist gesperrt und kann nicht geändert oder gelöscht werden.
+              </div>
+            )}
+            <fieldset disabled={tourGesperrt(editForm)} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, fontSize: 13, color: TEXT, cursor: "pointer" }}>
               <input type="checkbox" style={{ width: "auto", margin: 0 }} checked={!!editForm.andererAuftraggeber}
                 onChange={(e) => {
@@ -4494,6 +4510,7 @@ export default function TourenApp() {
                 })()}
               </div>
             </div>
+            </fieldset>
             <div style={{ marginTop: 18, background: BG, borderRadius: 8, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ fontSize: 13, fontWeight: 500, color: TEXT_MUTED }}>Gesamtsumme</span>
               <span className="mono" style={{ fontSize: 18, fontWeight: 600, color: MARINE }}>{euro(gesamt(editForm))}</span>
@@ -4516,8 +4533,12 @@ export default function TourenApp() {
               <div style={{ marginTop: 12, fontSize: 12.5, color: DANGER }}>{editSaveNote}</div>
             )}
             <div style={{ marginTop: 16, display: "flex", justifyContent: "space-between" }}>
-              <button className="ghost" style={{ color: DANGER, borderColor: DANGER_BG }} onClick={() => setConfirmDelete(true)}><Trash2 size={14} /> Löschen</button>
-              {editGsVergleich?.positionId ? (() => {
+              {tourGesperrt(editForm) ? <span /> : (
+                <button className="ghost" style={{ color: DANGER, borderColor: DANGER_BG }} onClick={() => setConfirmDelete(true)}><Trash2 size={14} /> Löschen</button>
+              )}
+              {tourGesperrt(editForm) ? (
+                <button className="ghost" onClick={() => { setEditId(null); setEditForm(null); setEditFromGutschriftId(null); setEditGsVergleich(null); setEditErrors([]); setEditSaveNote(""); }}>Schließen</button>
+              ) : editGsVergleich?.positionId ? (() => {
                 const rest = r2(offenBetrag(editForm) - r2(editGsVergleich.betrag)); // > 0: GS zahlt weniger
                 const passt = Math.abs(rest) <= 0.01;
                 const dis = gsBusy ? { opacity: 0.6, cursor: "default" } : undefined;
