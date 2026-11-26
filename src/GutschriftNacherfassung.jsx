@@ -37,6 +37,7 @@ export default function GutschriftNacherfassung({ onChanged }) {
   const [imports, setImports] = useState([]);
   const [importsError, setImportsError] = useState("");
   const fileRef = useRef(null);
+  const [kombiniert, setKombiniert] = useState(null);
 
   async function ladeImports() {
     try {
@@ -99,6 +100,12 @@ export default function GutschriftNacherfassung({ onChanged }) {
         update(d.key, { status: "fehler", fehler: err.message || "Import fehlgeschlagen." });
       }
     }
+    // Teilzahlung + spätere Nachzahlung (verschiedene Gutschriften, gleiche
+    // Auftrags-Nr.) zusammenführen - erst nach allen Dateien sinnvoll.
+    try {
+      const n = await db.kombinierenNacherfassung();
+      setKombiniert(n || 0);
+    } catch { /* Positionen bleiben dann einfach in der Liste */ }
     setBusy(false);
     await ladeImports();
     onChanged && onChanged();
@@ -195,6 +202,12 @@ export default function GutschriftNacherfassung({ onChanged }) {
             {summe("touren")} Touren bekommen ihre Gutschrift-Nr. ({euro(summe("summe_abgerechnet"))}) ·
             {" "}{summe("differenz") + summe("mehrdeutig") + summe("nicht_gefunden")} Positionen zur Prüfung in die Nacherfassungs-Liste
           </span>
+        </div>
+      )}
+
+      {kombiniert > 0 && (
+        <div style={{ marginTop: 12, fontSize: 12.5, color: SUCCESS, background: "#E7F6EF", borderRadius: 8, padding: "10px 14px" }}>
+          {kombiniert} Tournummer{kombiniert > 1 ? "n" : ""} mit Teil- und Nachzahlung aus verschiedenen Gutschriften zusammengeführt und abgerechnet.
         </div>
       )}
 

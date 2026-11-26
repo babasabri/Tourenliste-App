@@ -513,6 +513,14 @@ export async function importNacherfassung(meta, positionen) {
   return data;
 }
 
+// Führt Teil- und Nachzahlungen derselben Auftrags-Nr. über mehrere
+// Gutschriften zusammen (nur cent-genaue Fälle). Gibt die Anzahl zurück.
+export async function kombinierenNacherfassung() {
+  const { data, error } = await supabase.rpc("gutschrift_nacherfassung_kombinieren");
+  if (error) throw error;
+  return data;
+}
+
 // Nimmt einen kompletten Nacherfassungs-Import zurück.
 export async function rueckgaengigImport(importId) {
   const { error } = await supabase.rpc("gutschrift_import_rueckgaengig", { p_import_id: importId });
