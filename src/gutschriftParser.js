@@ -49,7 +49,7 @@ const KOSTENART_RULES = [
   { feld: "wartezeit", test: (l) => /^Trucking\s+Wartezeit/i.test(l) || /^Wartezeit/i.test(l) || /^WZ\b/i.test(l) },
   { feld: "diesel", test: (l) => /Dieselzuschlag/i.test(l) },
   { feld: "adr", test: (l) => /Gefahrgut/i.test(l) || /^ADR\b/i.test(l) },
-  { feld: "multistop", test: (l) => /^Trucking\s+Multistop/i.test(l) },
+  { feld: "multistop", test: (l) => /^Trucking\s+Multistop/i.test(l) || /^Multistop\b/i.test(l) || /^MS$/i.test(l) },
   { feld: "fd", test: (l) => /^FD\b/i.test(l) },
   { feld: "fracht", test: (l) => /^Trucking\b/i.test(l) || /^Zusätzliches\s+Trucking/i.test(l) || /^Transport\b/i.test(l) },
 ];
