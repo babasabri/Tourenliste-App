@@ -490,43 +490,6 @@ export async function rueckgaengigGutschriftBuchung(buchungId) {
   return { touren, review };
 }
 
-// ---------------------------------------------- Nacherfassung alter Gutschriften --
-// Vorprüfung ohne Schreiben: Zählt, was beim Import passieren würde.
-export async function pruefenNacherfassung(belegNr, positionen) {
-  const { data, error } = await supabase.rpc("gutschrift_nacherfassung_pruefen", {
-    p_beleg_nr: belegNr, p_positionen: positionen,
-  });
-  if (error) throw error;
-  return data;
-}
-
-// Import: exakte Treffer werden gebucht, Rest landet offen in der Nacherfassungs-Liste.
-export async function importNacherfassung(meta, positionen) {
-  const { data, error } = await supabase.rpc("gutschrift_nacherfassung_import", {
-    p_dateiname: meta.dateiname,
-    p_beleg_nr: meta.belegNr,
-    p_rg_datum: meta.rgDatum || null,
-    p_dokument_summe: meta.dokumentSumme,
-    p_positionen: positionen,
-  });
-  if (error) throw error;
-  return data;
-}
-
-// Führt Teil- und Nachzahlungen derselben Auftrags-Nr. über mehrere
-// Gutschriften zusammen (nur cent-genaue Fälle). Gibt die Anzahl zurück.
-export async function kombinierenNacherfassung() {
-  const { data, error } = await supabase.rpc("gutschrift_nacherfassung_kombinieren");
-  if (error) throw error;
-  return data;
-}
-
-// Nimmt einen kompletten Nacherfassungs-Import zurück.
-export async function rueckgaengigImport(importId) {
-  const { error } = await supabase.rpc("gutschrift_import_rueckgaengig", { p_import_id: importId });
-  if (error) throw error;
-}
-
 // Alle Gutschriften (auch Teilgutschriften) einer Tour, älteste zuerst.
 export async function fetchTourGutschriften(tourId) {
   const { data, error } = await supabase

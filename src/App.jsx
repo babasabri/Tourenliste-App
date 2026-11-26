@@ -14,7 +14,6 @@ import { parseGutschriftPdf } from "./gutschriftParser";
 import { supabase } from "./supabaseClient";
 import FrachtbriefEingang from "./FrachtbriefEingang";
 import GutschriftZuweisen from "./GutschriftZuweisen";
-import GutschriftNacherfassung from "./GutschriftNacherfassung";
 import { offenBetrag, offenFelder, formatFelder, felderAusZeilen, feldVergleich, fehlendeFelder, FELD_LABEL, r2 } from "./gutschriftLogik";
 import Fuhrpark from "./Fuhrpark";
 import Abwesenheiten from "./Abwesenheiten";
@@ -3304,35 +3303,16 @@ export default function TourenApp() {
                 </div>
               </div>
               );
-              const laufend = gsReview.filter((r) => !r.gutschrift_imports?.nacherfassung);
-              const nacherf = gsReview.filter((r) => r.gutschrift_imports?.nacherfassung);
               return (
-                <>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Prüfliste (offene Differenzen aus dem laufenden Abgleich)</div>
-                    {gsReviewError && (
-                      <div style={{ fontSize: 12.5, color: DANGER, background: DANGER_BG, borderRadius: 8, padding: "10px 14px", marginBottom: 12 }}>
-                        {gsReviewError}
-                      </div>
-                    )}
-                    {renderListe(laufend, "Keine offenen Differenzen - alles geprüft.")}
-                  </div>
-
-                  <div style={{ marginTop: 28 }}>
-                    <GutschriftNacherfassung onChanged={async () => {
-                      try { setTours(await db.fetchTours()); } catch { /* Anzeige aktualisiert sich beim nächsten Laden */ }
-                      loadGutschriftReview();
-                    }} />
-                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
-                      Nacherfassungs-Liste (Abweichungen aus alten Gutschriften{nacherf.length ? ` · ${nacherf.length} offen` : ""})
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Prüfliste (offene Differenzen aus allen Imports)</div>
+                  {gsReviewError && (
+                    <div style={{ fontSize: 12.5, color: DANGER, background: DANGER_BG, borderRadius: 8, padding: "10px 14px", marginBottom: 12 }}>
+                      {gsReviewError}
                     </div>
-                    <div style={{ fontSize: 12, color: TEXT_MUTED, marginBottom: 10, maxWidth: 760 }}>
-                      Hier stehen nur Positionen aus der Nacherfassung. "Zuweisen" sucht auch unter bereits abgerechneten
-                      Touren ohne Gutschrift-Nr. Positionen, die nicht zu uns gehören (z. B. Touren aus 2025), mit "Erledigt" abhaken.
-                    </div>
-                    {renderListe(nacherf, "Keine offenen Positionen aus der Nacherfassung.")}
-                  </div>
-                </>
+                  )}
+                  {renderListe(gsReview, "Keine offenen Differenzen - alles geprüft.")}
+                </div>
               );
             })()}
           </div>
