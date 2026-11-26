@@ -159,6 +159,10 @@ const COST_RE = /^(.*?)\s{2,}EUR\s+([\d.,]+)\s*$/;
 // Betrag und die Eigenkontrolle schlug fehl (Gutschrift 9324611624, Pos.
 // 3515959/2: 50,00 EUR "FD").
 const AMOUNT_ONLY_RE = /^EUR\s+([\d.,]+)\s*$/;
+// Gestellungsdatum/-zeit: erste Zeile nach der Order-Zeile, z. B.
+// "09.12.2025   11:00   64521  Groß-Gerau" (für die Nacherfassung: Touren
+// aus 2025 werden ignoriert).
+const GESTELLUNG_RE = /^(\d{1,2}\.\d{1,2}\.\d{4})\s+\d{1,2}:\d{2}\b/;
 
 // Parst die rekonstruierten Zeilen in Order-Blöcke. Gibt zusätzlich
 // belegNr, rgDatum und die vom Dokument selbst ausgewiesene Endsumme
@@ -202,8 +206,17 @@ function parseLines(lines) {
         kunde: om[3].replace(/\s+/g, " ").trim(),
         betrag: 0,
         zeilen: [],
+        gestellungsdatum: null,
       };
       continue;
+    }
+
+    if (current && !current.gestellungsdatum && current.zeilen.length === 0) {
+      const gm = trimmed.match(GESTELLUNG_RE);
+      if (gm) {
+        current.gestellungsdatum = parseGermanDate(gm[1]);
+        continue;
+      }
     }
 
     const cm = line.match(COST_RE);

@@ -28,6 +28,7 @@ const dmy = (iso) => (iso ? String(iso).slice(0, 10).split("-").reverse().join("
 
 const payload = (positionen) => positionen.map((p) => ({
   orderNr: p.orderNr, kunde: p.kunde || "", betrag: p.betrag, zeilen: p.zeilen || [],
+  gestellungsdatum: p.gestellungsdatum || "",
 }));
 
 export default function GutschriftNacherfassung({ onChanged }) {
@@ -127,7 +128,8 @@ export default function GutschriftNacherfassung({ onChanged }) {
         Für Gutschriften von vor dem laufenden Abgleich. Mehrere PDFs auf einmal möglich. Gebucht werden nur
         <b> exakte Treffer</b>: die Tour bleibt "Abgerechnet", bekommt Gutschrift-Nr. und Datum und ist danach gesperrt.
         Abweichungen werden <b>nicht</b> gebucht, sie landen unten in der Nacherfassungs-Liste. Bereits vorhandene
-        Gutschriften werden übersprungen. Jeder Import lässt sich komplett zurücknehmen.
+        Gutschriften werden übersprungen. Positionen aus 2025 (Gestellungsdatum vor 2026), zu denen es keine Tour
+        in der App gibt, werden automatisch ignoriert und abgehakt. Jeder Import lässt sich komplett zurücknehmen.
       </div>
 
       <button className="primary" disabled={busy} onClick={() => fileRef.current && fileRef.current.click()}
@@ -148,6 +150,7 @@ export default function GutschriftNacherfassung({ onChanged }) {
                 <th style={{ textAlign: "right" }}>Mehrdeutig</th>
                 <th style={{ textAlign: "right" }}>Nicht gefunden</th>
                 <th style={{ textAlign: "right" }}>Schon gebucht</th>
+                <th style={{ textAlign: "right" }} title="Touren aus 2025 ohne Eintrag in der App - werden automatisch abgehakt">2025 ignoriert</th>
                 <th>Status</th>
               </tr>
             </thead>
@@ -165,6 +168,7 @@ export default function GutschriftNacherfassung({ onChanged }) {
                     <td className="mono" style={{ textAlign: "right", color: z.mehrdeutig ? AMBER_DARK : undefined }}>{z.mehrdeutig ?? "–"}</td>
                     <td className="mono" style={{ textAlign: "right", color: z.nicht_gefunden ? AMBER_DARK : undefined }}>{z.nicht_gefunden ?? "–"}</td>
                     <td className="mono" style={{ textAlign: "right" }}>{z.bereits_gebucht ?? "–"}</td>
+                    <td className="mono" style={{ textAlign: "right", color: TEXT_MUTED }}>{z.ignoriert_2025 ?? "–"}</td>
                     <td style={{ fontSize: 12 }}>
                       {d.status === "lese" && <span style={{ color: TEXT_MUTED, display: "inline-flex", gap: 4, alignItems: "center" }}><Loader2 size={12} /> wird geprüft …</span>}
                       {d.status === "bereit" && <span style={{ color: MARINE, fontWeight: 600 }}>bereit</span>}

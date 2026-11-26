@@ -409,6 +409,7 @@ export async function applyGutschriftImport(meta, positionen) {
       kunde: p.kunde,
       betrag: p.betrag,
       zeilen: p.zeilen,
+      gestellungsdatum: p.gestellungsdatum || "",
       tourId: p.tourId || "",
       // Manuelle Zuweisung (auch mehrere Touren, z. B. gleiche Auftrags-Nr.
       // als eine Position abgerechnet) - siehe Zuweisungs-Dialog.
