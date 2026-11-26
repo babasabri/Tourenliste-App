@@ -51,7 +51,7 @@ const KOSTENART_RULES = [
   { feld: "adr", test: (l) => /Gefahrgut/i.test(l) || /^ADR\b/i.test(l) },
   { feld: "multistop", test: (l) => /^Trucking\s+Multistop/i.test(l) },
   { feld: "fd", test: (l) => /^FD\b/i.test(l) },
-  { feld: "fracht", test: (l) => /^Trucking\b/i.test(l) || /^Zusätzliches\s+Trucking/i.test(l) },
+  { feld: "fracht", test: (l) => /^Trucking\b/i.test(l) || /^Zusätzliches\s+Trucking/i.test(l) || /^Transport\b/i.test(l) },
 ];
 export function kategorisiereKostenart(label) {
   for (const r of KOSTENART_RULES) {
@@ -152,6 +152,29 @@ const SKIP_SUBSTRINGS = [
 ];
 
 const ORDER_RE = /^(\d{5,9})\s*\/\s*(\d+)\s+(.*?)\s{2,}(\d+)\s+(\S+)\s+(\S*")\s*$/;
+// Fallback für abweichend aufgebaute Kopfzeilen (z. B. Nachberechnungen ohne
+// Kunde und/oder ohne km): "3435186 / 3   TXGU775354-0   40\"" oder
+// "3487944 / 3   Trans Service Team GmbH   HMMU612703-4   40\"". Neue Position,
+// sobald die Zeile mit einer Order-Nr. beginnt und eine Container-Nr. oder
+// eine Fuß-Angabe enthält. Ohne diesen Fall wurden die Beträge solcher
+// Positionen der vorherigen Position zugeschlagen (GS 9324601317, 9324609602).
+const ORDER_FALLBACK_RE = /^(\d{5,9})\s*\/\s*(\d+)(?:\s+(.*))?$/;
+const CONTAINER_RE = /\b[A-Z]{4}\s?\d{6}-?\d\b/;
+const FUSS_RE = /\b\d{2}"\s*$/;
+
+function parseOrderFallback(line) {
+  const m = line.trim().match(ORDER_FALLBACK_RE);
+  if (!m) return null;
+  const rest = m[3] || "";
+  if (!CONTAINER_RE.test(rest) && !FUSS_RE.test(rest)) return null;
+  const kunde = rest
+    .replace(FUSS_RE, "")
+    .replace(CONTAINER_RE, "")
+    .replace(/\s+\d{1,4}\s*$/, "") // km am Ende
+    .replace(/\s+/g, " ")
+    .trim();
+  return { orderNr: `${m[1]}/${m[2]}`, kunde };
+}
 const COST_RE = /^(.*?)\s{2,}EUR\s+([\d.,]+)\s*$/;
 // Sonderfall: Bezeichnung und Betrag stehen auf zwei getrennten Zeilen (z. B.
 // "FD" allein in einer Zeile, der Betrag "EUR  50,00" in der Zeile darunter,
@@ -199,11 +222,12 @@ function parseLines(lines) {
     if (SKIP_SUBSTRINGS.some((mk) => line.includes(mk))) continue;
 
     const om = line.match(ORDER_RE);
-    if (om) {
+    const fb = om ? null : parseOrderFallback(line);
+    if (om || fb) {
       if (current) positionen.push(current);
       current = {
-        orderNr: `${om[1]}/${om[2]}`,
-        kunde: om[3].replace(/\s+/g, " ").trim(),
+        orderNr: om ? `${om[1]}/${om[2]}` : fb.orderNr,
+        kunde: om ? om[3].replace(/\s+/g, " ").trim() : fb.kunde,
         betrag: 0,
         zeilen: [],
         gestellungsdatum: null,
