@@ -4280,7 +4280,7 @@ export default function TourenApp() {
                         <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                           <span className="mono" style={{ minWidth: 80, textAlign: "right", fontWeight: 700 }}>{euro(g.betrag)}</span>
                           <span>
-                            {g.art === "ausbuchung" ? "Differenz ausgebucht" : g.art === "altbestand" ? "Altbestand" : g.teil ? "Teilgutschrift" : "Gutschrift"}
+                            {g.art === "ausbuchung" ? "Differenz ausgebucht" : g.art === "altbestand" ? "Altbestand" : g.art === "rechnung" ? "Rechnung" : g.teil ? "Teilgutschrift" : "Gutschrift"}
                             {g.gutschrift_nr ? <> <span className="mono" style={{ fontWeight: 700 }}>{g.gutschrift_nr}</span></> : ""}
                             {g.gutschrift_datum ? ` vom ${formatDateDMY(g.gutschrift_datum)}` : ""}
                             {g.notiz ? <span style={{ color: TEXT_MUTED }}> · {g.notiz}</span> : ""}
